@@ -621,9 +621,9 @@ class ResponseSummarizer:
         agg_dict = {}
         for col in response_cols:
             if col in df.columns:
-                agg_dict[col] = ['count', 'mean', 'std', 'sem', 'median', 
-                                 lambda x: x.quantile(0.25),
-                                 lambda x: x.quantile(0.75)]
+                agg_dict[col] = ['count', 'mean', 'std', 'sem', 'median',
+                                 lambda x: x.astype(float).quantile(0.25),
+                                 lambda x: x.astype(float).quantile(0.75)]
         
         if not agg_dict:
             return pd.DataFrame()
