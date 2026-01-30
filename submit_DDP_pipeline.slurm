@@ -4,8 +4,8 @@
 #SBATCH --time=1:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
-#SBATCH --output=talazoparib_analysis_output/slurm_%j.out
-#SBATCH --error=talazoparib_analysis_output/slurm_%j.err
+#SBATCH --output=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.out
+#SBATCH --error=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.err
 # #SBATCH --mail-user=your.email@institution.edu
 # #SBATCH --mail-type=END,FAIL
 
@@ -25,7 +25,7 @@
 
 # --- Configuration ---
 CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/2Cohort_TZ_config.json"
-OUTPUT_DIR="talazoparib_analysis_output"
+OUTPUT_DIR="/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output"
 N_WORKERS=8
 
 # --- Environment Setup ---
