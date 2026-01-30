@@ -1,0 +1,79 @@
+{
+    "metadata": {
+      "experiment_name": "DNA_Damage_Panel_Talazoparib",
+      "date": "2025-01-28",
+      "researcher": "",
+      "description": "DNA damage panel analysis comparing WT and KO genotypes with CTRL and P1 conditions treated with Talazoparib (PARP inhibitor)",
+      "control_label": "DMSO",
+      "dilut_column": "Dilut",
+      "output_dir": "./talazoparib_analysis_output",
+      "notes": "3x dilution series. EC50 values determined from separate live/dead curve experiments."
+    },
+    "genotypes": {
+      "WT-CTRL": {
+        "description": "Wild-type control condition",
+        "drugs": {
+          "Talazoparib": {
+            "path": "/cluster/tufts/levinlab/adebaa01/20260120_2WT-GO4-DDP-2D-7-5K-TZ-100uM/DNA_Damage_Panel/single_cell_features.parquet",
+            "ec50_um": 0.333,
+            "max_dose": "",
+            "moa": "PARP inhibitor",
+            "dilution_factor": 3,
+            "notes": "PARP1/2 inhibitor - traps PARP on DNA, causes replication fork collapse"
+          }
+        }
+      },
+      "KO-CTRL": {
+        "description": "Knockout control condition",
+        "drugs": {
+          "Talazoparib": {
+            "path": "/cluster/tufts/levinlab/adebaa01/20260120_2KO-DDP-GO4-2D-7-5K-TZ-100uM/DNA_Damage_Panel/single_cell_features.parquet",
+            "ec50_um": 0.333,
+            "max_dose": "",
+            "moa": "PARP inhibitor",
+            "dilution_factor": 3,
+            "notes": "PARP1/2 inhibitor - traps PARP on DNA, causes replication fork collapse"
+          }
+        }
+      },
+      "WT-P1": {
+        "description": "Wild-type P1 condition",
+        "drugs": {
+          "Talazoparib": {
+            "path": "/cluster/tufts/levinlab/adebaa01/20260120_2WT-P13-DDP-GO4-2D-7-5K-TZ/DNA_Damage_Panel/single_cell_features.parquet",
+            "ec50_um": 33,
+            "max_dose": "",
+            "moa": "PARP inhibitor",
+            "dilution_factor": 3,
+            "notes": "PARP1/2 inhibitor - traps PARP on DNA, causes replication fork collapse"
+          }
+        }
+      },
+      "KO-P1": {
+        "description": "Knockout P1 condition",
+        "drugs": {
+          "Talazoparib": {
+            "path": "/cluster/tufts/levinlab/adebaa01/20260120_2KO-P1-CP-GO2-2D-5K-TZ-100uM/DNA_Damage_Panel/single_cell_features.parquet",
+            "ec50_um": 33,
+            "max_dose": "",
+            "moa": "PARP inhibitor",
+            "dilution_factor": 3,
+            "notes": "PARP1/2 inhibitor - traps PARP on DNA, causes replication fork collapse"
+          }
+        }
+      },
+      "NV": {
+        "description": "Naive cells",
+        "drugs": {
+          "Talazoparib": {
+            "path": "/cluster/tufts/levinlab/adebaa01/20260120_NV-P5-DDP-2D-10K-TZ-100uM/DNA_Damage_Panel/single_cell_features.parquet",
+            "ec50_um": 0.001,
+            "max_dose": "",
+            "moa": "PARP inhibitor",
+            "dilution_factor": 3,
+            "notes": "PARP1/2 inhibitor - traps PARP on DNA, causes replication fork collapse"
+          }
+        }
+      }
+    }
+  }

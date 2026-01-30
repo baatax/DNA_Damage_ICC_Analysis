@@ -1,0 +1,166 @@
+{
+  "metadata": {
+    "experiment_name": "DNA_Damage_Panel_MultiGenotype",
+    "date": "2024-01-15",
+    "researcher": "Your Name",
+    "description": "DNA damage panel analysis across multiple genotypes and DNA-damaging compounds",
+    "control_label": "DMSO",
+    "dilut_column": "Dilut",
+    "output_dir": "./dna_damage_analysis_output",
+    "notes": "3x dilution series, varying starting doses per compound"
+  },
+  "genotypes": {
+    "WT": {
+      "description": "Wild-type control cells",
+      "drugs": {
+        "Etoposide": {
+          "path": "/path/to/data/WT_Etoposide_single_cell_features.parquet",
+          "ec50_um": 1.5,
+          "max_dose": "100uM",
+          "moa": "Topoisomerase II inhibitor",
+          "dilution_factor": 3.0,
+          "notes": "Induces DSBs via TopoII poisoning"
+        },
+        "Camptothecin": {
+          "path": "/path/to/data/WT_Camptothecin_single_cell_features.parquet",
+          "ec50_um": 0.5,
+          "max_dose": "33uM",
+          "moa": "Topoisomerase I inhibitor",
+          "dilution_factor": 3.0,
+          "notes": "Induces SSBs that convert to DSBs during replication"
+        },
+        "Cisplatin": {
+          "path": "/path/to/data/WT_Cisplatin_single_cell_features.parquet",
+          "ec50_um": 5.0,
+          "max_dose": "100uM",
+          "moa": "DNA crosslinker",
+          "dilution_factor": 3.0,
+          "notes": "Forms intra- and inter-strand crosslinks"
+        },
+        "Doxorubicin": {
+          "path": "/path/to/data/WT_Doxorubicin_single_cell_features.parquet",
+          "ec50_um": 0.3,
+          "max_dose": "10uM",
+          "moa": "TopoII inhibitor + intercalator",
+          "dilution_factor": 3.0,
+          "notes": "Multiple mechanisms including ROS generation"
+        },
+        "Bleomycin": {
+          "path": "/path/to/data/WT_Bleomycin_single_cell_features.parquet",
+          "ec50_um": 2.0,
+          "max_dose": "100uM",
+          "moa": "Radiomimetic",
+          "dilution_factor": 3.0,
+          "notes": "Generates DSBs similar to ionizing radiation"
+        },
+        "Hydroxyurea": {
+          "path": "/path/to/data/WT_Hydroxyurea_single_cell_features.parquet",
+          "ec50_um": 500.0,
+          "max_dose": "10mM",
+          "moa": "Ribonucleotide reductase inhibitor",
+          "dilution_factor": 3.0,
+          "notes": "Causes replication stress and fork stalling"
+        }
+      }
+    },
+    "BRCA1_KO": {
+      "description": "BRCA1 knockout - HR deficient",
+      "drugs": {
+        "Etoposide": {
+          "path": "/path/to/data/BRCA1_KO_Etoposide_single_cell_features.parquet",
+          "ec50_um": 0.8,
+          "max_dose": "100uM",
+          "moa": "Topoisomerase II inhibitor",
+          "dilution_factor": 3.0
+        },
+        "Camptothecin": {
+          "path": "/path/to/data/BRCA1_KO_Camptothecin_single_cell_features.parquet",
+          "ec50_um": 0.2,
+          "max_dose": "33uM",
+          "moa": "Topoisomerase I inhibitor",
+          "dilution_factor": 3.0
+        },
+        "Cisplatin": {
+          "path": "/path/to/data/BRCA1_KO_Cisplatin_single_cell_features.parquet",
+          "ec50_um": 1.5,
+          "max_dose": "100uM",
+          "moa": "DNA crosslinker",
+          "dilution_factor": 3.0
+        },
+        "Doxorubicin": {
+          "path": "/path/to/data/BRCA1_KO_Doxorubicin_single_cell_features.parquet",
+          "ec50_um": 0.1,
+          "max_dose": "10uM",
+          "moa": "TopoII inhibitor + intercalator",
+          "dilution_factor": 3.0
+        },
+        "Bleomycin": {
+          "path": "/path/to/data/BRCA1_KO_Bleomycin_single_cell_features.parquet",
+          "ec50_um": 0.5,
+          "max_dose": "100uM",
+          "moa": "Radiomimetic",
+          "dilution_factor": 3.0
+        }
+      }
+    },
+    "p53_KO": {
+      "description": "p53 knockout - checkpoint deficient",
+      "drugs": {
+        "Etoposide": {
+          "path": "/path/to/data/p53_KO_Etoposide_single_cell_features.parquet",
+          "ec50_um": 2.5,
+          "max_dose": "100uM",
+          "moa": "Topoisomerase II inhibitor",
+          "dilution_factor": 3.0
+        },
+        "Camptothecin": {
+          "path": "/path/to/data/p53_KO_Camptothecin_single_cell_features.parquet",
+          "ec50_um": 0.8,
+          "max_dose": "33uM",
+          "moa": "Topoisomerase I inhibitor",
+          "dilution_factor": 3.0
+        },
+        "Cisplatin": {
+          "path": "/path/to/data/p53_KO_Cisplatin_single_cell_features.parquet",
+          "ec50_um": 8.0,
+          "max_dose": "100uM",
+          "moa": "DNA crosslinker",
+          "dilution_factor": 3.0
+        },
+        "Doxorubicin": {
+          "path": "/path/to/data/p53_KO_Doxorubicin_single_cell_features.parquet",
+          "ec50_um": 0.5,
+          "max_dose": "10uM",
+          "moa": "TopoII inhibitor + intercalator",
+          "dilution_factor": 3.0
+        }
+      }
+    },
+    "ATM_KO": {
+      "description": "ATM knockout - DSB signaling deficient",
+      "drugs": {
+        "Etoposide": {
+          "path": "/path/to/data/ATM_KO_Etoposide_single_cell_features.parquet",
+          "ec50_um": 0.5,
+          "max_dose": "100uM",
+          "moa": "Topoisomerase II inhibitor",
+          "dilution_factor": 3.0
+        },
+        "Bleomycin": {
+          "path": "/path/to/data/ATM_KO_Bleomycin_single_cell_features.parquet",
+          "ec50_um": 0.3,
+          "max_dose": "100uM",
+          "moa": "Radiomimetic",
+          "dilution_factor": 3.0
+        },
+        "Doxorubicin": {
+          "path": "/path/to/data/ATM_KO_Doxorubicin_single_cell_features.parquet",
+          "ec50_um": 0.08,
+          "max_dose": "10uM",
+          "moa": "TopoII inhibitor + intercalator",
+          "dilution_factor": 3.0
+        }
+      }
+    }
+  }
+}
