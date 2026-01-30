@@ -79,6 +79,7 @@ python -c "import numpy; print(f'numpy: {numpy.__version__}')"
 python -c "import pandas; print(f'pandas: {pandas.__version__}')"
 python -c "import scipy; print(f'scipy: {scipy.__version__}')"
 python -c "import sklearn; print(f'sklearn: {sklearn.__version__}')"
+python -c "import matplotlib; print(f'matplotlib: {matplotlib.__version__}')" || echo "WARNING: matplotlib not installed — plots will be skipped"
 
 # --- Verify config file ---
 if [ ! -f "${CONFIG_FILE}" ]; then
@@ -103,6 +104,7 @@ python /cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/run_dna_damage_pipel
     --output ${OUTPUT_DIR} \
     --workers ${N_WORKERS} \
     --resume \
+    --crowding-threshold 0.3 \
     --log-level INFO
 
 PIPELINE_EXIT_CODE=$?
@@ -122,7 +124,7 @@ echo "=============================================="
 echo ""
 echo "Output files:"
 echo "----------------------------------------------"
-find ${OUTPUT_DIR} -type f -name "*.csv" -o -name "*.json" -o -name "*.parquet" | head -50
+find ${OUTPUT_DIR} -type f \( -name "*.csv" -o -name "*.json" -o -name "*.parquet" -o -name "*.png" \) | sort | head -80
 
 # --- Print disk usage ---
 echo ""
