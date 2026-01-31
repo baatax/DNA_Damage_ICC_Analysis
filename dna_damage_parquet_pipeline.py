@@ -53,6 +53,12 @@ from scipy import stats
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, RobustScaler
 
+try:
+    from pca_plots import generate_pca_plots
+    HAS_PCA_PLOTS = True
+except ImportError:
+    HAS_PCA_PLOTS = False
+
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 
@@ -1149,7 +1155,25 @@ class DNADamageAnalysisPipeline:
             print(f"  {mode}: {len(selected_features)} features, "
                   f"PC1={pca.explained_variance_ratio_[0]*100:.1f}%, "
                   f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
-        
+
+            # Generate PCA plots
+            if HAS_PCA_PLOTS:
+                try:
+                    plot_files = generate_pca_plots(
+                        profiles_df=profiles,
+                        loadings_df=loadings,
+                        variance_df=var_explained,
+                        output_dir=pca_dir,
+                        mode=mode,
+                        experiment_name=self.config.experiment_name,
+                    )
+                    paths.update(plot_files)
+                    print(f"  {mode}: Generated {len(plot_files)} PCA plots")
+                except Exception as e:
+                    print(f"  Warning: Could not generate PCA plots ({mode}): {e}")
+            else:
+                print("  Skipping PCA plots (matplotlib not available)")
+
         return paths
     
     def _save_manifest(self, output_files: Dict[str, Any]):

@@ -114,6 +114,12 @@ except ImportError as e:
     print("are in the same directory or in your PYTHONPATH.")
     sys.exit(1)
 
+try:
+    from pca_plots import generate_pca_plots
+    HAS_PCA_PLOTS = True
+except ImportError:
+    HAS_PCA_PLOTS = False
+
 
 # =============================================================================
 # CHECKPOINT MANAGER
@@ -699,11 +705,29 @@ class DNADamageProductionPipeline:
             self._log_step(step, f"{mode}: {len(selected_features)} features, "
                           f"PC1={pca.explained_variance_ratio_[0]*100:.1f}%, "
                           f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
-        
+
+            # Generate PCA plots
+            if HAS_PCA_PLOTS:
+                try:
+                    plot_files = generate_pca_plots(
+                        profiles_df=profiles,
+                        loadings_df=loadings,
+                        variance_df=var_explained,
+                        output_dir=pca_dir,
+                        mode=mode,
+                        experiment_name=self.config.experiment_name,
+                    )
+                    output_files.update(plot_files)
+                    self._log_step(step, f"{mode}: Generated {len(plot_files)} plots")
+                except Exception as e:
+                    self._log_step(step, f"Warning: Could not generate PCA plots ({mode}): {e}")
+            else:
+                self._log_step(step, "Skipping PCA plots (matplotlib not available)")
+
         self._log_timing(step, time.time() - start)
-        
+
         self.checkpoint.mark_complete(step)
-        
+
         return output_files
     
     def _step_dose_response_analysis(self) -> Dict[str, Path]:
