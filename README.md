@@ -2,6 +2,8 @@
 
 A production-ready bioinformatics pipeline for analyzing single-cell immunocytochemistry (ICC) data from DNA damage experiments. It processes parquet files containing single-cell features (DNA damage markers, morphology, intensity measurements) from multiple genotypes treated with DNA-damaging compounds, performs comprehensive statistical analysis, and generates publication-quality results.
 
+> **Statistical policy update (important):** Use well-level summaries as the primary experimental unit. Cells are nested within wells, and wells are nested within plate/batch/replicate groups. Treating single cells as independent replicates can inflate significance. See [Statistical and QC Policy](ANALYSIS_STATISTICAL_POLICY.md) for required modeling and reporting practices.
+
 ## Overview
 
 The pipeline is designed for studying how different genetic backgrounds (genotypes) respond to DNA-damaging compounds through dose-response relationships and cellular phenotyping. It supports multi-genotype, multi-drug experimental designs with automatic normalization, quality control, and statistical comparison.
@@ -66,14 +68,14 @@ The pipeline executes 10 sequential analysis steps:
 | Step | Description |
 |------|-------------|
 | 1 | Load parquet data from all genotypes and drugs |
-| 2 | Preprocess with per-genotype normalization |
-| 3 | Preprocess with across-all-genotypes normalization |
+| 2 | Validate schema and create canonical sample keys |
+| 3 | Compute explicit cell-level/well-level QC and exclusion logs |
 | 4 | Compile crowding metrics (cell density measurements) |
 | 5 | Compile quality control (QC) metrics per well |
 | 6 | Generate per-well aggregated CSV files |
-| 7 | Compute PCA (Principal Component Analysis) |
-| 8 | Fit dose-response curves |
-| 9 | Statistical comparisons between genotypes |
+| 7 | Compute well-level feature/effect profiles and PCA diagnostics |
+| 8 | Fit robust dose-response candidate models |
+| 9 | Statistical comparisons between genotypes with resampling |
 | 10 | Save manifest with metadata |
 
 ## Configuration
@@ -117,6 +119,13 @@ output_dir/
 └── manifest.json     # Pipeline metadata and file inventory
 ```
 
+## Experimental Unit and Statistical Design
+
+- **Primary replication unit:** well-level summary values.
+- **Nesting structure:** cells → well → plate/batch/imaging session.
+- **Recommended random effects:** plate/batch and replicate in any inferential model.
+- **Cell-level modeling:** optional and must be hierarchical/mixed-effects; do not use naive single-cell significance tests.
+
 ## Key Features Analyzed
 
 - **DNA Damage Markers**: foci count, gamma-H2AX mean intensity
@@ -130,25 +139,52 @@ output_dir/
 
 ### Dose-Response Modeling
 
-Fits a four-parameter Hill equation to dose-response data:
+Fits dose-response candidate models on **well-level effect sizes**:
+
+- 4-parameter Hill
+- constrained 3-parameter Hill
+- optional monotonic fallback for non-monotonic/noisy curves
+
+Core fitting policy:
+
+- Use `log10(dose_uM)` for `dose > 0`; treat control (`dose = 0`) as a separate anchor.
+- Apply explicit parameter bounds and multiple initializations.
+- Use configurable weighting (e.g., by `n_cells` or inverse well variance).
+- Record convergence status and diagnostics for every curve.
+
+Canonical Hill equation:
 
 ```
 y = bottom + (top - bottom) / (1 + (EC50 / x)^hill_slope)
 ```
 
-Returns EC50, Hill slope, R-squared, and confidence intervals for each drug-genotype combination.
+Returns EC50, Hill slope, confidence intervals, RMSE, AIC, model choice, and convergence diagnostics for each drug-genotype combination.
 
 ### Statistical Comparisons
 
-- Z-tests for EC50 comparisons between genotypes
-- Mann-Whitney U tests for response value comparisons at specific doses
-- Multiple testing correction (Bonferroni and FDR)
+- **Preferred:** cluster bootstrap EC50 comparisons at the well level (stratified by plate/replicate).
+- **Dose-specific effects:** permutation or rank-based tests on well-level effects with stratification when needed.
+- Effect size reporting (e.g., Cliff's delta or Hedges' g) with confidence intervals.
+- Multiple testing correction (FDR recommended for discovery workflows).
 
 ### Normalization
 
-Two normalization modes are supported:
-- **Per-genotype**: Robust z-score normalization within each genotype separately
-- **Across-all**: Normalize across all genotypes together for direct comparison
+Normalization is goal-dependent and should be explicit in all reports:
+
+- **Control-relative (recommended default):** compute Δ / fold-change relative to matched DMSO controls per plate × genotype × drug.
+- **Plate correction:** remove plate-specific baseline shifts using control wells.
+- **Across-plate correction (optional):** batch correction on well-level profiles only.
+
+Avoid genotype-wise z-scoring when baseline genotype differences are part of the biological question.
+
+## QC Requirements
+
+- Define hard fail thresholds (cell count, border fraction, segmentation coverage, missing-feature fraction).
+- Keep soft warning metrics (crowding extremes, intensity saturation, robust outlier scores).
+- Emit decision tables and exclusion logs with reason codes.
+- Exclude failed wells from downstream fitting by default.
+
+Detailed threshold examples and reporting templates are provided in [Statistical and QC Policy](ANALYSIS_STATISTICAL_POLICY.md).
 
 ## Demo / Testing
 
