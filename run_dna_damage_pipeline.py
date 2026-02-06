@@ -256,11 +256,16 @@ class DNADamageProductionPipeline:
             control_label=self.config.control_label,
         )
         self.statistical_comparator = StatisticalComparator()
+        self.qc_config = self.config.qc
         
         # Data storage
         self.raw_data: Optional[pd.DataFrame] = None
         self.data_per_geno: Optional[pd.DataFrame] = None
         self.data_across_all: Optional[pd.DataFrame] = None
+        self.filtered_raw_data: Optional[pd.DataFrame] = None
+        self.qc_well_table: Optional[pd.DataFrame] = None
+        self.well_profiles: Dict[str, pd.DataFrame] = {}
+        self.well_effects: Dict[str, pd.DataFrame] = {}
         self.feature_cols_per_geno: List[str] = []
         self.feature_cols_across: List[str] = []
         
@@ -534,11 +539,20 @@ class DNADamageProductionPipeline:
         groupby_cols = [c for c in groupby_cols if c in self.raw_data.columns]
         
         qc_metrics = self.qc_compiler.compile_well_qc(self.raw_data, groupby_cols)
-        
+        qc_decisions = self.qc_compiler.apply_qc_rules(qc_metrics, self.qc_config)
+        self.qc_well_table = qc_decisions
+        self.filtered_raw_data = self._filter_by_qc(self.raw_data)
+
         # Save
         qc_path = self.output_dir / "qc" / "well_qc_metrics.csv"
-        qc_metrics.to_csv(qc_path, index=False)
+        qc_decisions.to_csv(qc_path, index=False)
         output_files['qc'] = qc_path
+
+        if self.qc_well_table is not None:
+            excluded = self.qc_well_table[~self.qc_well_table['qc_pass']]
+            excluded_path = self.output_dir / "qc" / "excluded_wells.csv"
+            excluded.to_csv(excluded_path, index=False)
+            output_files['excluded_wells'] = excluded_path
         
         self._log_timing(step, time.time() - start)
         self._log_step(step, f"Saved: {qc_path}")
@@ -565,7 +579,9 @@ class DNADamageProductionPipeline:
         ]:
             mode_dir = self.output_dir / "per_well" / mode
             mode_dir.mkdir(parents=True, exist_ok=True)
-            
+
+            df = self._filter_by_qc(df)
+
             # Group by well and aggregate
             groupby_cols = ['plate', 'well']
             meta_cols = ['genotype', 'drug', 'dilut_string', 'dilut_um', 'is_control', 'moa']
@@ -584,11 +600,25 @@ class DNADamageProductionPipeline:
             well_data = df.groupby(groupby_cols).agg(agg_dict).reset_index()
             cell_counts = df.groupby(groupby_cols).size().rename('cell_count')
             well_data = well_data.merge(cell_counts.reset_index(), on=groupby_cols)
-            
+
+            baseline_cols = [c for c in ['plate', 'genotype', 'drug'] if c in well_data.columns]
+            effects = self._compute_control_relative_effects(
+                well_data,
+                feature_cols,
+                self.config.control_label,
+                baseline_cols,
+            )
+
             # Save combined file
             combined_path = mode_dir / f"well_profiles_{mode}.csv"
             well_data.to_csv(combined_path, index=False)
             output_files[f"well_profiles_{mode}"] = combined_path
+
+            effects_path = mode_dir / f"well_effects_{mode}.csv"
+            effects.to_csv(effects_path, index=False)
+            output_files[f"well_effects_{mode}"] = effects_path
+            self.well_profiles[mode] = well_data
+            self.well_effects[mode] = effects
             
             # Save per-genotype files
             if 'genotype' in well_data.columns:
@@ -598,6 +628,11 @@ class DNADamageProductionPipeline:
                     geno_path = mode_dir / f"well_profiles_{geno_safe}_{mode}.csv"
                     geno_data.to_csv(geno_path, index=False)
                     output_files[f"well_profiles_{geno_safe}_{mode}"] = geno_path
+
+                    geno_effects = effects[effects['genotype'] == geno]
+                    geno_effects_path = mode_dir / f"well_effects_{geno_safe}_{mode}.csv"
+                    geno_effects.to_csv(geno_effects_path, index=False)
+                    output_files[f"well_effects_{geno_safe}_{mode}"] = geno_effects_path
             
             self._log_step(step, f"Saved {mode} well profiles: {len(well_data)} wells")
         
@@ -628,6 +663,8 @@ class DNADamageProductionPipeline:
         ]:
             pca_dir = self.output_dir / "pca" / mode
             pca_dir.mkdir(parents=True, exist_ok=True)
+
+            df = self._filter_by_qc(df)
             
             # Select features
             selected_features = self.feature_selector.select_features(df, feature_cols)
@@ -720,12 +757,26 @@ class DNADamageProductionPipeline:
         
         dr_dir = self.output_dir / "dose_response"
         
-        # Key response columns for DNA damage
+        effects_df = self.well_effects.get("per_genotype")
+        if effects_df is None or effects_df.empty:
+            effects_path = self.output_dir / "per_well" / "per_genotype" / "well_effects_per_genotype.csv"
+            if effects_path.exists():
+                effects_df = pd.read_csv(effects_path)
+
+        analysis_df = effects_df if effects_df is not None and not effects_df.empty else self.filtered_raw_data
+        if analysis_df is None or analysis_df.empty:
+            analysis_df = self.raw_data
+
         response_cols = [
             'foci_count', 'foci_mean_per_cell', 'ki67_positive',
             'gamma_h2ax_mean_intensity', 'area', 'dapi_mean_intensity'
         ]
-        response_cols = [c for c in response_cols if c in self.raw_data.columns]
+        available_cols = analysis_df.columns.tolist()
+        response_cols = [c for c in response_cols if c in available_cols]
+        effect_response_cols = []
+        for col in response_cols:
+            delta_col = f"{col}_delta"
+            effect_response_cols.append(delta_col if delta_col in available_cols else col)
         
         if not response_cols:
             self._log_step(step, "Warning: No response columns found for dose-response analysis")
@@ -734,12 +785,13 @@ class DNADamageProductionPipeline:
         
         # Fit dose-response curves per genotype/drug
         all_fits = []
-        for col in response_cols:
+        for col in effect_response_cols:
             try:
                 fits = self.dose_response_analyzer.fit_drug_response(
-                    self.raw_data,
+                    analysis_df,
                     col,
-                    groupby=['genotype', 'drug']
+                    groupby=['genotype', 'drug'],
+                    weight_column='cell_count' if 'cell_count' in analysis_df.columns else None,
                 )
                 if not fits.empty:
                     all_fits.append(fits)
@@ -755,8 +807,8 @@ class DNADamageProductionPipeline:
         
         # Summary statistics by dose
         summary = self.response_summarizer.summarize_by_dose(
-            self.raw_data,
-            response_cols,
+            analysis_df,
+            effect_response_cols,
             groupby=['genotype', 'drug']
         )
         if not summary.empty:
@@ -766,9 +818,10 @@ class DNADamageProductionPipeline:
         
         # Fold-change vs control
         fold_change = self.response_summarizer.compute_fold_change_vs_control(
-            self.raw_data,
-            response_cols,
-            groupby=['genotype', 'drug']
+            analysis_df,
+            effect_response_cols,
+            groupby=['genotype', 'drug'],
+            baseline_cols=['plate']
         )
         if not fold_change.empty:
             fc_path = dr_dir / "fold_change_vs_control.csv"
@@ -795,31 +848,45 @@ class DNADamageProductionPipeline:
         
         stats_dir = self.output_dir / "statistics"
         
-        # Compare EC50s if we have fits
-        fits_path = self.output_dir / "dose_response" / "dose_response_fits.csv"
-        if fits_path.exists():
-            fits_df = pd.read_csv(fits_path)
-            
-            ec50_comparisons = self.statistical_comparator.compare_ec50s(
-                fits_df,
+        effects_df = self.well_effects.get("per_genotype")
+        if effects_df is None or effects_df.empty:
+            effects_path = self.output_dir / "per_well" / "per_genotype" / "well_effects_per_genotype.csv"
+            if effects_path.exists():
+                effects_df = pd.read_csv(effects_path)
+
+        analysis_df = effects_df if effects_df is not None and not effects_df.empty else self.filtered_raw_data
+        if analysis_df is None or analysis_df.empty:
+            analysis_df = self.raw_data
+
+        response_cols = ['foci_count', 'ki67_positive', 'area']
+        available_cols = analysis_df.columns.tolist()
+        response_cols = [c for c in response_cols if c in available_cols]
+        effect_response_cols = []
+        for col in response_cols:
+            delta_col = f"{col}_delta"
+            effect_response_cols.append(delta_col if delta_col in available_cols else col)
+
+        for col in effect_response_cols:
+            ec50_boot = self.statistical_comparator.compare_ec50s_bootstrap(
+                analysis_df,
+                col,
+                dose_col='dilut_um',
                 groupby='genotype',
-                drug_col='drug'
+                drug_col='drug',
+                weight_col='cell_count' if 'cell_count' in analysis_df.columns else None,
             )
-            
-            if not ec50_comparisons.empty:
-                ec50_path = stats_dir / "ec50_comparisons.csv"
-                ec50_comparisons.to_csv(ec50_path, index=False)
-                output_files['ec50_comparisons'] = ec50_path
-                self._log_step(step, f"Saved EC50 comparisons: {ec50_path}")
+
+            if not ec50_boot.empty:
+                ec50_path = stats_dir / f"ec50_bootstrap_{col}.csv"
+                ec50_boot.to_csv(ec50_path, index=False)
+                output_files[f'ec50_bootstrap_{col}'] = ec50_path
+                self._log_step(step, f"Saved EC50 bootstrap comparisons: {ec50_path}")
         
         # Compare responses at each dose
-        response_cols = ['foci_count', 'ki67_positive', 'area']
-        response_cols = [c for c in response_cols if c in self.raw_data.columns]
-        
-        for col in response_cols:
+        for col in effect_response_cols:
             try:
                 comparisons = self.statistical_comparator.compare_responses_at_dose(
-                    self.raw_data,
+                    analysis_df,
                     col,
                     dose_col='dilut_um',
                     groupby='genotype',
@@ -838,6 +905,72 @@ class DNADamageProductionPipeline:
         self.checkpoint.mark_complete(step)
         
         return output_files
+
+    def _filter_by_qc(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Filter a dataframe to wells passing QC."""
+        if self.qc_well_table is None or self.qc_well_table.empty:
+            return df
+        if 'qc_pass' not in self.qc_well_table.columns:
+            return df
+        key_cols = [c for c in ['plate', 'well'] if c in df.columns and c in self.qc_well_table.columns]
+        if not key_cols:
+            return df
+        pass_wells = self.qc_well_table[self.qc_well_table['qc_pass']][key_cols].drop_duplicates()
+        return df.merge(pass_wells, on=key_cols, how='inner')
+
+    @staticmethod
+    def _compute_control_relative_effects(
+        well_df: pd.DataFrame,
+        feature_cols: List[str],
+        control_label: str,
+        baseline_cols: List[str],
+    ) -> pd.DataFrame:
+        """Compute control-relative effects per well."""
+        def mad(series: pd.Series) -> float:
+            return float(np.nanmedian(np.abs(series - np.nanmedian(series))))
+
+        df = well_df.copy()
+        if not baseline_cols:
+            df['__baseline__'] = "all"
+            baseline_cols = ['__baseline__']
+        if 'is_control' not in df.columns:
+            if 'dilut_string' in df.columns:
+                df['is_control'] = df['dilut_string'].str.upper() == control_label.upper()
+            elif 'dilut_um' in df.columns:
+                df['is_control'] = df['dilut_um'] == 0
+
+        control_df = df[df['is_control']].copy()
+        if control_df.empty:
+            return df
+
+        stats = control_df.groupby(baseline_cols)[feature_cols].agg(['median', mad])
+        stats.columns = [
+            f"{col}_{stat_name}"
+            for col, stat_name in stats.columns
+        ]
+        stats = stats.reset_index()
+
+        df = df.merge(stats, on=baseline_cols, how='left')
+
+        for col in feature_cols:
+            median_col = f"{col}_median"
+            mad_col = f"{col}_mad"
+            if median_col not in df.columns:
+                continue
+            df[f"{col}_delta"] = df[col] - df[median_col]
+            df[f"{col}_log2fc"] = np.where(
+                (df[col] > 0) & (df[median_col] > 0),
+                np.log2(df[col] / df[median_col]),
+                np.nan,
+            )
+            if mad_col in df.columns:
+                df[f"{col}_robust_z"] = np.where(
+                    df[mad_col] > 0,
+                    (df[col] - df[median_col]) / df[mad_col],
+                    np.nan,
+                )
+
+        return df
     
     def _save_manifest(self, output_files: Dict[str, Any]):
         """Save pipeline manifest with metadata."""
@@ -851,9 +984,14 @@ class DNADamageProductionPipeline:
                 "control_label": self.config.control_label,
                 "dilut_column": self.config.dilut_column,
                 "n_workers": self.n_workers,
+                "qc": self.qc_config.__dict__ if self.qc_config else None,
             },
             "data_summary": {
                 "total_cells": len(self.raw_data) if self.raw_data is not None else 0,
+                "total_cells_after_qc": (
+                    len(self.filtered_raw_data)
+                    if self.filtered_raw_data is not None else 0
+                ),
                 "genotypes": (
                     self.raw_data['genotype'].unique().tolist()
                     if self.raw_data is not None and 'genotype' in self.raw_data.columns

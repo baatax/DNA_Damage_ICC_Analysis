@@ -85,6 +85,7 @@ class ExperimentConfig:
     dilut_column: str = "Dilut"
     output_dir: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    qc: Optional["QCConfig"] = None
 
     @classmethod
     def from_json(cls, json_path: Union[str, Path]) -> "ExperimentConfig":
@@ -97,6 +98,8 @@ class ExperimentConfig:
         control_label = metadata.get("control_label", "DMSO")
         dilut_column = metadata.get("dilut_column", "Dilut")
         output_dir = metadata.get("output_dir", None)
+        qc_data = data.get("qc", metadata.get("qc", {}))
+        qc_config = QCConfig.from_dict(qc_data) if qc_data else None
         
         genotypes = {}
         for geno_name, geno_data in data.get("genotypes", {}).items():
@@ -118,6 +121,32 @@ class ExperimentConfig:
             dilut_column=dilut_column,
             output_dir=output_dir,
             metadata=metadata,
+            qc=qc_config,
+        )
+
+
+@dataclass
+class QCConfig:
+    """Quality control thresholds and warning criteria."""
+    n_cells_min: Optional[int] = None
+    n_cells_max: Optional[int] = None
+    border_max: Optional[float] = None
+    coverage_min: Optional[float] = None
+    missing_max: Optional[float] = None
+    crowding_quantile_low: Optional[float] = None
+    crowding_quantile_high: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QCConfig":
+        """Create QCConfig from a dictionary."""
+        return cls(
+            n_cells_min=data.get("n_cells_min"),
+            n_cells_max=data.get("n_cells_max"),
+            border_max=data.get("border_max"),
+            coverage_min=data.get("coverage_min"),
+            missing_max=data.get("missing_max"),
+            crowding_quantile_low=data.get("crowding_quantile_low"),
+            crowding_quantile_high=data.get("crowding_quantile_high"),
         )
 
 
@@ -733,6 +762,7 @@ class QCMetricsCompiler:
         
         # Aggregate cell-level metrics
         cell_metrics = [c for c in self.CELL_QC_METRICS if c in df.columns]
+        feature_cols = self._get_feature_cols(df)
         
         qc_data = {}
         grouped = df.groupby(groupby_cols)
@@ -772,6 +802,17 @@ class QCMetricsCompiler:
         
         # Combine into dataframe
         qc_df = pd.DataFrame(qc_data).reset_index()
+
+        if feature_cols:
+            missing_fraction = df[feature_cols].isna().mean(axis=1)
+            qc_df['missing_feature_fraction'] = grouped.apply(
+                lambda x: missing_fraction.loc[x.index].mean()
+            ).values
+
+        if 'border_cells_total' in qc_df.columns and 'orig_cells_total' in qc_df.columns:
+            qc_df['fraction_border_cells'] = (
+                qc_df['border_cells_total'] / qc_df['orig_cells_total']
+            )
         
         # Add metadata if available
         meta_cols = ['genotype', 'drug', 'dilut_string', 'moa']
@@ -781,6 +822,99 @@ class QCMetricsCompiler:
                 qc_df = qc_df.merge(meta.reset_index(), on=groupby_cols, how='left')
         
         return qc_df
+
+    def apply_qc_rules(
+        self,
+        qc_df: pd.DataFrame,
+        qc_config: Optional["QCConfig"],
+    ) -> pd.DataFrame:
+        """Apply QC thresholds and return decision table with reasons."""
+        if qc_df.empty:
+            return qc_df
+
+        qc_df = qc_df.copy()
+        qc_df['qc_pass'] = True
+        qc_df['qc_fail_reasons'] = ""
+        qc_df['qc_warning_reasons'] = ""
+
+        if qc_config is None:
+            return qc_df
+
+        def _append_reason(series: pd.Series, reason: str) -> pd.Series:
+            return series.where(series == "", series + "; ") + reason
+
+        if qc_config.n_cells_min is not None and 'cell_count' in qc_df.columns:
+            fail = qc_df['cell_count'] < qc_config.n_cells_min
+            qc_df.loc[fail, 'qc_pass'] = False
+            qc_df.loc[fail, 'qc_fail_reasons'] = _append_reason(
+                qc_df.loc[fail, 'qc_fail_reasons'], f"n_cells<{qc_config.n_cells_min}"
+            )
+
+        if qc_config.n_cells_max is not None and 'cell_count' in qc_df.columns:
+            fail = qc_df['cell_count'] > qc_config.n_cells_max
+            qc_df.loc[fail, 'qc_pass'] = False
+            qc_df.loc[fail, 'qc_fail_reasons'] = _append_reason(
+                qc_df.loc[fail, 'qc_fail_reasons'], f"n_cells>{qc_config.n_cells_max}"
+            )
+
+        if qc_config.border_max is not None and 'fraction_border_cells' in qc_df.columns:
+            fail = qc_df['fraction_border_cells'] > qc_config.border_max
+            qc_df.loc[fail, 'qc_pass'] = False
+            qc_df.loc[fail, 'qc_fail_reasons'] = _append_reason(
+                qc_df.loc[fail, 'qc_fail_reasons'], f"border_fraction>{qc_config.border_max}"
+            )
+
+        if qc_config.coverage_min is not None and 'segmentation_coverage' in qc_df.columns:
+            fail = qc_df['segmentation_coverage'] < qc_config.coverage_min
+            qc_df.loc[fail, 'qc_pass'] = False
+            qc_df.loc[fail, 'qc_fail_reasons'] = _append_reason(
+                qc_df.loc[fail, 'qc_fail_reasons'], f"coverage<{qc_config.coverage_min}"
+            )
+
+        if qc_config.missing_max is not None and 'missing_feature_fraction' in qc_df.columns:
+            fail = qc_df['missing_feature_fraction'] > qc_config.missing_max
+            qc_df.loc[fail, 'qc_pass'] = False
+            qc_df.loc[fail, 'qc_fail_reasons'] = _append_reason(
+                qc_df.loc[fail, 'qc_fail_reasons'], f"missing>{qc_config.missing_max}"
+            )
+
+        warn_low = qc_config.crowding_quantile_low
+        warn_high = qc_config.crowding_quantile_high
+        if warn_low is not None or warn_high is not None:
+            crowding_col = next(
+                (c for c in qc_df.columns if c.startswith("crowding_local_mean_")), None
+            )
+            if crowding_col:
+                values = qc_df[crowding_col].dropna()
+                if not values.empty:
+                    low_val = values.quantile(warn_low) if warn_low is not None else None
+                    high_val = values.quantile(warn_high) if warn_high is not None else None
+                    if low_val is not None:
+                        warn = qc_df[crowding_col] < low_val
+                        qc_df.loc[warn, 'qc_warning_reasons'] = _append_reason(
+                            qc_df.loc[warn, 'qc_warning_reasons'], "crowding_low"
+                        )
+                    if high_val is not None:
+                        warn = qc_df[crowding_col] > high_val
+                        qc_df.loc[warn, 'qc_warning_reasons'] = _append_reason(
+                            qc_df.loc[warn, 'qc_warning_reasons'], "crowding_high"
+                        )
+
+        return qc_df
+
+    def _get_feature_cols(self, df: pd.DataFrame) -> List[str]:
+        exclude = {
+            'cell_id', 'plate', 'well', 'site', 'timepoint', 'field_dir', 'base_name',
+            'genotype', 'drug', 'moa', 'dilut_string', 'dilut_um', 'is_control',
+            'ec50_um', 'log_dose_ec50_ratio', 'Dilut', 'group', 'treatment',
+            'well_row', 'well_col', 'well_row_index', 'well_col_index',
+            'plate_row_edge_dist', 'plate_col_edge_dist', 'plate_edge_dist_min',
+            'image_height', 'image_width', 'n_border_cells', 'orig_cell_count',
+        }
+        qc_cols = set(self.WELL_QC_METRICS)
+        qc_cols.update({'cell_count'})
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        return [c for c in numeric_cols if c not in exclude and c not in qc_cols]
 
 
 # =============================================================================

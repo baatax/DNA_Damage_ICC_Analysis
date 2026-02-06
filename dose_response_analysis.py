@@ -57,6 +57,19 @@ def hill_equation(
         return bottom + (top - bottom) / (1 + (ec50 / x) ** hill_slope)
 
 
+def hill_equation_log10(
+    x_log10: np.ndarray,
+    bottom: float,
+    top: float,
+    log10_ec50: float,
+    hill_slope: float,
+) -> np.ndarray:
+    """Hill equation parameterized on log10 dose."""
+    with np.errstate(over='ignore', invalid='ignore'):
+        exponent = (log10_ec50 - x_log10) * hill_slope
+        return bottom + (top - bottom) / (1 + np.power(10.0, exponent))
+
+
 def inverse_hill(
     y: float,
     bottom: float,
@@ -81,8 +94,12 @@ class DoseResponseFit:
     bottom: float
     top: float
     ec50: float
+    log10_ec50: float
     hill_slope: float
     r_squared: float
+    rmse: float
+    aic: float
+    model: str
     se_ec50: Optional[float] = None
     ci_lower: Optional[float] = None
     ci_upper: Optional[float] = None
@@ -96,9 +113,12 @@ def fit_dose_response(
     doses: np.ndarray,
     responses: np.ndarray,
     *,
+    weights: Optional[np.ndarray] = None,
+    control_response: Optional[float] = None,
     initial_guess: Optional[Tuple[float, float, float, float]] = None,
     max_iter: int = 5000,
     bounds: Optional[Tuple[Tuple, Tuple]] = None,
+    model_candidates: Optional[Sequence[str]] = None,
 ) -> DoseResponseFit:
     """
     Fit a four-parameter Hill equation to dose-response data.
@@ -123,85 +143,194 @@ def fit_dose_response(
     """
     doses = np.asarray(doses, dtype=np.float64)
     responses = np.asarray(responses, dtype=np.float64)
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
     
     # Remove NaN and non-positive doses
     mask = ~np.isnan(doses) & ~np.isnan(responses) & (doses > 0)
     doses = doses[mask]
     responses = responses[mask]
+    if weights is not None:
+        weights = weights[mask]
     
     if len(doses) < 4:
         return DoseResponseFit(
-            bottom=np.nan, top=np.nan, ec50=np.nan, hill_slope=np.nan,
-            r_squared=np.nan, converged=False,
+            bottom=np.nan, top=np.nan, ec50=np.nan, log10_ec50=np.nan,
+            hill_slope=np.nan, r_squared=np.nan, rmse=np.nan, aic=np.nan,
+            model="none", converged=False,
             doses=doses, responses=responses
         )
-    
-    # Initial guess
-    if initial_guess is None:
-        bottom_init = np.min(responses)
-        top_init = np.max(responses)
-        ec50_init = np.median(doses)
+
+    if model_candidates is None:
+        model_candidates = ("4p", "3p_top")
+
+    x_log10 = np.log10(doses)
+
+    def _default_initials() -> List[Tuple[float, float, float, float]]:
+        bottom_init = np.nanmin(responses)
+        top_init = np.nanmax(responses) if control_response is None else control_response
+        log_ec50_init = np.nanmedian(x_log10)
         hill_init = 1.0
-        initial_guess = (bottom_init, top_init, ec50_init, hill_init)
-    
-    # Bounds
+        return [
+            (bottom_init, top_init, log_ec50_init, hill_init),
+            (bottom_init, top_init, log_ec50_init, 0.5),
+            (bottom_init, top_init, log_ec50_init, 2.0),
+        ]
+
+    initial_guesses = [initial_guess] if initial_guess else _default_initials()
+
     if bounds is None:
+        resp_min = np.nanmin(responses)
+        resp_max = np.nanmax(responses)
         bounds = (
-            (0, 0, 1e-12, 0.1),           # lower bounds
-            (np.inf, np.inf, np.inf, 10)   # upper bounds
+            (resp_min - abs(resp_min), resp_min - abs(resp_min), -12, 0.1),
+            (resp_max + abs(resp_max), resp_max + abs(resp_max), 12, 10),
         )
-    
-    try:
-        popt, pcov = curve_fit(
-            hill_equation,
-            doses,
-            responses,
-            p0=initial_guess,
-            bounds=bounds,
-            maxfev=max_iter,
-        )
-        
-        bottom, top, ec50, hill_slope = popt
-        
-        # Calculate R-squared
-        fitted = hill_equation(doses, *popt)
-        ss_res = np.sum((responses - fitted) ** 2)
-        ss_tot = np.sum((responses - np.mean(responses)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        
-        # Standard error of EC50
-        if pcov is not None and not np.any(np.isinf(pcov)):
-            se_ec50 = np.sqrt(pcov[2, 2])
-            # 95% CI
-            ci_lower = ec50 - 1.96 * se_ec50
-            ci_upper = ec50 + 1.96 * se_ec50
-        else:
-            se_ec50 = None
-            ci_lower = None
-            ci_upper = None
-        
+
+    best_fit: Optional[DoseResponseFit] = None
+
+    for model_type in model_candidates:
+        top_fixed = None
+        if model_type == "3p_top":
+            top_fixed = control_response if control_response is not None else np.nanmax(responses)
+
+        for guess in initial_guesses:
+            try:
+                if model_type == "4p":
+                    p0 = guess
+                    popt, pcov = curve_fit(
+                        hill_equation_log10,
+                        x_log10,
+                        responses,
+                        p0=p0,
+                        bounds=bounds,
+                        maxfev=max_iter,
+                        sigma=_weights_to_sigma(weights),
+                        absolute_sigma=False,
+                    )
+                    bottom, top, log_ec50, hill_slope = popt
+                elif model_type == "3p_top":
+                    if top_fixed is None:
+                        continue
+                    p0 = (guess[0], guess[2], guess[3])
+                    popt, pcov = curve_fit(
+                        lambda x, bottom, log_ec50, hill_slope: hill_equation_log10(
+                            x, bottom, top_fixed, log_ec50, hill_slope
+                        ),
+                        x_log10,
+                        responses,
+                        p0=p0,
+                        bounds=(
+                            (bounds[0][0], bounds[0][2], bounds[0][3]),
+                            (bounds[1][0], bounds[1][2], bounds[1][3]),
+                        ),
+                        maxfev=max_iter,
+                        sigma=_weights_to_sigma(weights),
+                        absolute_sigma=False,
+                    )
+                    bottom, log_ec50, hill_slope = popt
+                    top = top_fixed
+                else:
+                    continue
+
+                fitted = hill_equation_log10(x_log10, bottom, top, log_ec50, hill_slope)
+                ss_res = np.sum((responses - fitted) ** 2)
+                ss_tot = np.sum((responses - np.mean(responses)) ** 2)
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                rmse = np.sqrt(ss_res / len(responses))
+                k_params = 4 if model_type == "4p" else 3
+                aic = _aic(ss_res, len(responses), k_params)
+
+                log_ec50_index = 2 if model_type == "4p" else 1
+                se_ec50, ci_lower, ci_upper = _compute_ec50_ci(pcov, log_ec50, log_ec50_index)
+
+                fit = DoseResponseFit(
+                    bottom=bottom,
+                    top=top,
+                    ec50=10 ** log_ec50,
+                    log10_ec50=log_ec50,
+                    hill_slope=hill_slope,
+                    r_squared=r_squared,
+                    rmse=rmse,
+                    aic=aic,
+                    model=model_type,
+                    se_ec50=se_ec50,
+                    ci_lower=ci_lower,
+                    ci_upper=ci_upper,
+                    converged=True,
+                    doses=doses,
+                    responses=responses,
+                    fitted_responses=fitted,
+                )
+
+                if best_fit is None or fit.aic < best_fit.aic:
+                    best_fit = fit
+            except (RuntimeError, ValueError):
+                continue
+
+    if best_fit is None:
+        warnings.warn("Dose-response fit failed")
         return DoseResponseFit(
-            bottom=bottom,
-            top=top,
-            ec50=ec50,
-            hill_slope=hill_slope,
-            r_squared=r_squared,
-            se_ec50=se_ec50,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            converged=True,
-            doses=doses,
-            responses=responses,
-            fitted_responses=fitted,
-        )
-        
-    except (RuntimeError, ValueError) as e:
-        warnings.warn(f"Dose-response fit failed: {e}")
-        return DoseResponseFit(
-            bottom=np.nan, top=np.nan, ec50=np.nan, hill_slope=np.nan,
-            r_squared=np.nan, converged=False,
+            bottom=np.nan, top=np.nan, ec50=np.nan, log10_ec50=np.nan,
+            hill_slope=np.nan, r_squared=np.nan, rmse=np.nan, aic=np.nan,
+            model="none", converged=False,
             doses=doses, responses=responses
         )
+
+    return best_fit
+
+
+def _weights_to_sigma(weights: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if weights is None:
+        return None
+    safe_weights = np.where(weights <= 0, np.nan, weights)
+    sigma = 1.0 / np.sqrt(safe_weights)
+    return np.where(np.isfinite(sigma), sigma, 1.0)
+
+
+def _compute_ec50_ci(
+    pcov: Optional[np.ndarray],
+    log_ec50: float,
+    log_ec50_index: int,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    if pcov is None or np.any(np.isinf(pcov)):
+        return None, None, None
+    if pcov.shape[0] <= log_ec50_index:
+        return None, None, None
+    log_se = np.sqrt(pcov[log_ec50_index, log_ec50_index])
+    if not np.isfinite(log_se):
+        return None, None, None
+    ec50 = 10 ** log_ec50
+    se_ec50 = ec50 * np.log(10) * log_se
+    ci_lower = 10 ** (log_ec50 - 1.96 * log_se)
+    ci_upper = 10 ** (log_ec50 + 1.96 * log_se)
+    return se_ec50, ci_lower, ci_upper
+
+
+def _aic(ss_res: float, n: int, k: int) -> float:
+    if n <= 0 or ss_res <= 0:
+        return np.nan
+    return n * np.log(ss_res / n) + 2 * k
+
+
+def _bootstrap_resample(df: pd.DataFrame, strata_cols: List[str], rng: np.random.Generator) -> pd.DataFrame:
+    if not strata_cols:
+        return df.sample(len(df), replace=True, random_state=rng.integers(0, 1e9))
+    samples = []
+    for _, group in df.groupby(strata_cols):
+        if group.empty:
+            continue
+        sampled = group.sample(len(group), replace=True, random_state=rng.integers(0, 1e9))
+        samples.append(sampled)
+    return pd.concat(samples, ignore_index=True) if samples else df.copy()
+
+
+def _control_mean(df: pd.DataFrame, response_col: str) -> Optional[float]:
+    if 'is_control' in df.columns:
+        control_rows = df[df['is_control']]
+        if not control_rows.empty:
+            return control_rows[response_col].mean()
+    return None
 
 
 # =============================================================================
@@ -226,6 +355,7 @@ class DoseResponseAnalyzer:
         df: pd.DataFrame,
         response_column: str,
         groupby: Optional[List[str]] = None,
+        weight_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Fit dose-response curves for each drug/genotype combination.
@@ -261,20 +391,35 @@ class DoseResponseAnalyzer:
                 # Get doses and responses
                 doses = group[self.dose_column].values
                 responses = group[response_column].values
-                
+                weights = group[weight_column].values if weight_column and weight_column in group.columns else None
+                control_mean = None
+                if 'is_control' in group.columns:
+                    control_rows = group[group['is_control']]
+                    if not control_rows.empty:
+                        control_mean = control_rows[response_column].mean()
+
                 # Fit curve
-                fit = fit_dose_response(doses, responses)
+                fit = fit_dose_response(
+                    doses,
+                    responses,
+                    weights=weights,
+                    control_response=control_mean,
+                )
                 
                 # Build result row
                 row = dict(zip(groupby, name))
                 row.update({
                     'response_column': response_column,
-                    'n_points': len(doses),
+                    'n_points': len(fit.doses) if fit.doses is not None else 0,
                     'ec50': fit.ec50,
+                    'log10_ec50': fit.log10_ec50,
                     'hill_slope': fit.hill_slope,
                     'bottom': fit.bottom,
                     'top': fit.top,
                     'r_squared': fit.r_squared,
+                    'rmse': fit.rmse,
+                    'aic': fit.aic,
+                    'model': fit.model,
                     'se_ec50': fit.se_ec50,
                     'ec50_ci_lower': fit.ci_lower,
                     'ec50_ci_upper': fit.ci_upper,
@@ -284,16 +429,31 @@ class DoseResponseAnalyzer:
         else:
             doses = df[self.dose_column].values
             responses = df[response_column].values
-            fit = fit_dose_response(doses, responses)
+            weights = df[weight_column].values if weight_column and weight_column in df.columns else None
+            control_mean = None
+            if 'is_control' in df.columns:
+                control_rows = df[df['is_control']]
+                if not control_rows.empty:
+                    control_mean = control_rows[response_column].mean()
+            fit = fit_dose_response(
+                doses,
+                responses,
+                weights=weights,
+                control_response=control_mean,
+            )
             
             results.append({
                 'response_column': response_column,
-                'n_points': len(doses),
+                'n_points': len(fit.doses) if fit.doses is not None else 0,
                 'ec50': fit.ec50,
+                'log10_ec50': fit.log10_ec50,
                 'hill_slope': fit.hill_slope,
                 'bottom': fit.bottom,
                 'top': fit.top,
                 'r_squared': fit.r_squared,
+                'rmse': fit.rmse,
+                'aic': fit.aic,
+                'model': fit.model,
                 'se_ec50': fit.se_ec50,
                 'ec50_ci_lower': fit.ci_lower,
                 'ec50_ci_upper': fit.ci_upper,
@@ -385,6 +545,87 @@ class StatisticalComparator:
     """
     Statistical comparisons between genotypes and treatments.
     """
+
+    def compare_ec50s_bootstrap(
+        self,
+        df: pd.DataFrame,
+        response_col: str,
+        dose_col: str = 'dilut_um',
+        groupby: str = 'genotype',
+        drug_col: str = 'drug',
+        plate_col: str = 'plate',
+        replicate_col: str = 'replicate',
+        weight_col: Optional[str] = None,
+        n_boot: int = 500,
+        random_state: Optional[int] = 42,
+    ) -> pd.DataFrame:
+        """
+        Compare EC50 values via stratified cluster bootstrap at the well level.
+        """
+        rng = np.random.default_rng(random_state)
+        results = []
+
+        strata_cols = [c for c in [plate_col, replicate_col] if c in df.columns]
+
+        for drug, drug_df in df.groupby(drug_col):
+            groups = drug_df[groupby].unique()
+            if len(groups) < 2:
+                continue
+
+            for i, g1 in enumerate(groups):
+                for g2 in groups[i + 1:]:
+                    d1 = drug_df[drug_df[groupby] == g1]
+                    d2 = drug_df[drug_df[groupby] == g2]
+                    if d1.empty or d2.empty:
+                        continue
+
+                    deltas = []
+                    for _ in range(n_boot):
+                        s1 = _bootstrap_resample(d1, strata_cols, rng)
+                        s2 = _bootstrap_resample(d2, strata_cols, rng)
+
+                        fit1 = fit_dose_response(
+                            s1[dose_col].values,
+                            s1[response_col].values,
+                            weights=s1[weight_col].values if weight_col and weight_col in s1.columns else None,
+                            control_response=_control_mean(s1, response_col),
+                        )
+                        fit2 = fit_dose_response(
+                            s2[dose_col].values,
+                            s2[response_col].values,
+                            weights=s2[weight_col].values if weight_col and weight_col in s2.columns else None,
+                            control_response=_control_mean(s2, response_col),
+                        )
+
+                        if np.isfinite(fit1.log10_ec50) and np.isfinite(fit2.log10_ec50):
+                            deltas.append(fit1.log10_ec50 - fit2.log10_ec50)
+
+                    if not deltas:
+                        continue
+
+                    deltas = np.array(deltas)
+                    ci_lower, ci_upper = np.percentile(deltas, [2.5, 97.5])
+                    p_value = 2 * min(
+                        np.mean(deltas <= 0),
+                        np.mean(deltas >= 0),
+                    )
+
+                    results.append({
+                        drug_col: drug,
+                        f'{groupby}_1': g1,
+                        f'{groupby}_2': g2,
+                        'response_column': response_col,
+                        'delta_log10_ec50': np.mean(deltas),
+                        'ci_lower': ci_lower,
+                        'ci_upper': ci_upper,
+                        'p_value': p_value,
+                        'n_boot': len(deltas),
+                        'n_wells_1': len(d1),
+                        'n_wells_2': len(d2),
+                    })
+
+        result_df = pd.DataFrame(results)
+        return result_df
     
     def compare_ec50s(
         self,
@@ -648,6 +889,7 @@ class ResponseSummarizer:
         response_cols: List[str],
         groupby: Optional[List[str]] = None,
         control_col: str = 'is_control',
+        baseline_cols: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
         Compute fold-change relative to DMSO control.
@@ -668,9 +910,16 @@ class ResponseSummarizer:
         pd.DataFrame
             Fold-change values per dose
         """
+        response_cols = [c for c in response_cols if c in df.columns]
+        if not response_cols:
+            return pd.DataFrame()
+
         if groupby is None:
             groupby = ['genotype', 'drug']
         groupby = [c for c in groupby if c in df.columns]
+        if baseline_cols is None:
+            baseline_cols = ['plate']
+        baseline_cols = [c for c in baseline_cols if c in df.columns]
         
         if control_col not in df.columns:
             # Try to identify controls from dose column
@@ -681,46 +930,38 @@ class ResponseSummarizer:
                 return pd.DataFrame()
         
         results = []
-        
-        for name, group in df.groupby(groupby) if groupby else [(None, df)]:
-            if isinstance(name, str):
-                name = (name,)
-            
-            # Get control mean
-            controls = group[group[control_col]]
-            if len(controls) == 0:
+
+        control_group_cols = groupby + baseline_cols
+        if not control_group_cols:
+            control_group_cols = [self.dose_col] if self.dose_col in df.columns else []
+
+        control_df = df[df[control_col]] if control_col in df.columns else pd.DataFrame()
+        if control_df.empty:
+            return pd.DataFrame()
+
+        control_stats = (
+            control_df.groupby(control_group_cols)[response_cols]
+            .mean()
+            .reset_index()
+            .rename(columns={col: f"{col}_control_mean" for col in response_cols})
+        )
+
+        dose_group_cols = control_group_cols + [self.dose_col]
+        summary = df.groupby(dose_group_cols)[response_cols].mean().reset_index()
+        summary = summary.merge(control_stats, on=control_group_cols, how='left')
+
+        for col in response_cols:
+            ctrl_col = f"{col}_control_mean"
+            if ctrl_col not in summary.columns:
                 continue
-            
-            control_means = {}
-            for col in response_cols:
-                if col in controls.columns:
-                    control_means[col] = controls[col].mean()
-            
-            # Compute fold-change for each dose
-            for dose, dose_group in group.groupby(self.dose_col):
-                row = dict(zip(groupby, name)) if groupby else {}
-                row[self.dose_col] = dose
-                row['n_samples'] = len(dose_group)
-                row['is_control'] = dose_group[control_col].all() if control_col in dose_group.columns else False
-                
-                for col in response_cols:
-                    if col in dose_group.columns and col in control_means:
-                        mean_val = dose_group[col].mean()
-                        ctrl_val = control_means[col]
-                        
-                        row[f'{col}_mean'] = mean_val
-                        row[f'{col}_control_mean'] = ctrl_val
-                        
-                        if ctrl_val != 0:
-                            row[f'{col}_fold_change'] = mean_val / ctrl_val
-                            row[f'{col}_log2_fc'] = np.log2(mean_val / ctrl_val) if mean_val > 0 else np.nan
-                        else:
-                            row[f'{col}_fold_change'] = np.nan
-                            row[f'{col}_log2_fc'] = np.nan
-                
-                results.append(row)
-        
-        return pd.DataFrame(results)
+            summary[f"{col}_fold_change"] = summary[col] / summary[ctrl_col]
+            summary[f"{col}_log2_fc"] = np.where(
+                (summary[col] > 0) & (summary[ctrl_col] > 0),
+                np.log2(summary[col] / summary[ctrl_col]),
+                np.nan,
+            )
+
+        return summary
 
 
 # =============================================================================
