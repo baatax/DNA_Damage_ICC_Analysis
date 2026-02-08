@@ -102,6 +102,7 @@ try:
         FeatureSelector,
         parse_dilution_string,
     )
+    from dna_damage_plotting import PlotGenerator
     from dose_response_analysis import (
         DoseResponseAnalyzer,
         StatisticalComparator,
@@ -353,7 +354,10 @@ class DNADamageProductionPipeline:
             # Step 9: Statistical comparisons
             output_files.update(self._step_statistical_comparisons())
             
-            # Step 10: Save manifest
+            # Step 10: Generate plots from CSV outputs
+            output_files.update(self._step_generate_plots(output_files))
+            
+            # Step 11: Save manifest
             self._save_manifest(output_files)
             
             total_time = time.time() - start_time
@@ -905,6 +909,37 @@ class DNADamageProductionPipeline:
         self.checkpoint.mark_complete(step)
         
         return output_files
+
+    def _step_generate_plots(self, output_files: Dict[str, Path]) -> Dict[str, Path]:
+        """Step 10: Generate plots from CSV outputs."""
+        step = "10_generate_plots"
+        plot_files: Dict[str, Path] = {}
+
+        if self.resume and self.checkpoint.is_complete(step):
+            self._log_step(step, "Skipping (already complete)")
+            return plot_files
+
+        self._log_step(step, "Generating plots for CSV outputs...")
+        start = time.time()
+
+        csv_paths = [Path(p) for p in output_files.values() if str(p).endswith(".csv")]
+        if not csv_paths:
+            self._log_step(step, "No CSV outputs available for plotting")
+            self.checkpoint.mark_complete(step)
+            return plot_files
+
+        plotter = PlotGenerator(self.output_dir, logger=self.logger)
+        results = plotter.generate_plots(csv_paths)
+        for result in results:
+            for plot_path in result.plot_paths:
+                key = f"plot::{result.csv_path.stem}::{plot_path.name}"
+                plot_files[key] = plot_path
+
+        self._log_timing(step, time.time() - start)
+        self._log_step(step, f"Generated {len(plot_files)} plots")
+        self.checkpoint.mark_complete(step)
+
+        return plot_files
 
     def _filter_by_qc(self, df: pd.DataFrame) -> pd.DataFrame:
         """Filter a dataframe to wells passing QC."""
