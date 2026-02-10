@@ -915,7 +915,8 @@ class DNADamageProductionPipeline:
         step = "10_generate_plots"
         plot_files: Dict[str, Path] = {}
 
-        if self.resume and self.checkpoint.is_complete(step):
+        existing_plot_count = len(list((self.output_dir / "plots").rglob("*.png")))
+        if self.resume and self.checkpoint.is_complete(step) and existing_plot_count > 0:
             self._log_step(step, "Skipping (already complete)")
             return plot_files
 
@@ -923,6 +924,8 @@ class DNADamageProductionPipeline:
         start = time.time()
 
         csv_paths = [Path(p) for p in output_files.values() if str(p).endswith(".csv")]
+        if not csv_paths:
+            csv_paths = list(self.output_dir.rglob("*.csv"))
         if not csv_paths:
             self._log_step(step, "No CSV outputs available for plotting")
             self.checkpoint.mark_complete(step)
