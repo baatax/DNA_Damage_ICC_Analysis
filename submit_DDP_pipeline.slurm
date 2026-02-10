@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=talazoparib_dna_damage
 #SBATCH --partition=batch
-#SBATCH --time=1:00:00
+#SBATCH --time=6:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.out
