@@ -61,6 +61,32 @@ sbatch submit_DDP_pipeline.slurm
 
 The pipeline supports checkpoint/resume so interrupted jobs can continue where they left off by adding the `--resume` flag.
 
+
+### Create a small local test dataset from the 2-cohort Talazoparib config
+
+Use this helper to sample each genotype/drug parquet into small representative test files
+while preserving all columns and representation across available experimental groups
+(`Dilut`, `dilut_string`, `group`, `treatment`, `is_control`).
+
+```bash
+python create_test_dataset_from_config.py \
+  --source-config 2Cohort_TZ_config.json \
+  --output-config 2Cohort_TZ_test_config.json \
+  --output-data-dir test_data/2cohort_tz
+```
+
+Then run locally against the generated test config:
+
+```bash
+python run_dna_damage_pipeline.py 2Cohort_TZ_test_config.json --output ./test_output_2cohort_tz
+```
+
+Or submit test-data extraction on SLURM:
+
+```bash
+sbatch submit_generate_test_dataset.slurm
+```
+
 ## Pipeline Steps
 
 The pipeline executes 10 sequential analysis steps:
