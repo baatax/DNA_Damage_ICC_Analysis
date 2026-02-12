@@ -9,6 +9,10 @@
 
 set -euo pipefail
 
+module purge
+module load gcc/11.2.0
+module load cmake/3.23_gui
+source /cluster/tufts/levinlab/adebaa01/kk_venv/bin/activate
 # ----------------------------------------------
 # Generate repository-local test parquet datasets
 # from 2Cohort_TZ_config.json for internal testing.
@@ -38,10 +42,7 @@ echo "max_rows_per_dataset:  ${MAX_ROWS_PER_DATASET}"
 echo "seed:                  ${SEED}"
 echo "================================================"
 
-python --version
-python -c "import pandas, pyarrow; print('pandas:', pandas.__version__)"
-
-python create_test_dataset_from_config.py \
+python3 create_test_dataset_from_config.py \
   --source-config "${SOURCE_CONFIG}" \
   --output-config "${OUTPUT_CONFIG}" \
   --output-data-dir "${OUTPUT_DATA_DIR}" \
