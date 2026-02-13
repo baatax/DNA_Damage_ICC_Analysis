@@ -3,11 +3,11 @@
     "experiment_name": "DNA_Damage_Panel_Talazoparib",
     "date": "2025-01-28",
     "researcher": "",
-    "description": "DNA damage panel analysis comparing WT and KO genotypes with CTRL and P1 conditions treated with Talazoparib (PARP inhibitor) [LOCAL TEST CONFIG]",
+    "description": "DNA damage panel analysis comparing WT and KO genotypes with CTRL and P1 conditions treated with Talazoparib (PARP inhibitor)",
     "control_label": "DMSO",
     "dilut_column": "Dilut",
     "output_dir": "./test_output_2cohort_tz",
-    "notes": "Uses repository-local sampled parquet files generated via create_test_dataset_from_config.py."
+    "notes": "3x dilution series. EC50 values determined from separate live/dead curve experiments."
   },
   "genotypes": {
     "WT-CTRL": {
