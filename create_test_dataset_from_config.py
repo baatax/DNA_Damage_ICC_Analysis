@@ -12,12 +12,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterator, List, Tuple
 
 import pandas as pd
 
 
 GROUPING_CANDIDATES = ["Dilut", "dilut_string", "group", "treatment", "is_control"]
+ALT_PARQUET_FILENAMES = ("single_cell_features_numeric.parquet",)
 
 
 def _safe_name(value: str) -> str:
@@ -26,6 +27,49 @@ def _safe_name(value: str) -> str:
 
 def _sampling_groups(df: pd.DataFrame) -> List[str]:
     return [col for col in GROUPING_CANDIDATES if col in df.columns]
+
+
+def _iter_genotype_drug_entries(
+    cfg: Dict,
+) -> Iterator[Tuple[str, str, Dict]]:
+    genotypes = cfg.get("genotypes", {})
+    if not isinstance(genotypes, dict):
+        raise ValueError("Config key 'genotypes' must be a JSON object.")
+
+    for genotype, geno_cfg in genotypes.items():
+        if not isinstance(geno_cfg, dict):
+            raise ValueError(f"Config for genotype '{genotype}' must be an object.")
+        drugs = geno_cfg.get("drugs", {})
+        if not isinstance(drugs, dict):
+            raise ValueError(
+                f"Config key 'genotypes.{genotype}.drugs' must be a JSON object."
+            )
+        for drug, drug_cfg in drugs.items():
+            if not isinstance(drug_cfg, dict):
+                raise ValueError(
+                    f"Config for genotype '{genotype}' drug '{drug}' must be an object."
+                )
+            yield genotype, drug, drug_cfg
+
+
+def _resolve_source_parquet(path_value: str, config_dir: Path) -> Path:
+    raw_path = Path(path_value)
+    src_path = raw_path if raw_path.is_absolute() else (config_dir / raw_path).resolve()
+
+    candidates = [src_path]
+    candidates.extend(src_path.with_name(name) for name in ALT_PARQUET_FILENAMES)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    attempted = ", ".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"Source parquet does not exist. Tried: {attempted}")
+
+
+def _default_test_output_dir(output_config: Path) -> str:
+    stem = output_config.stem.replace("_config", "")
+    return f"./test_output_{_safe_name(stem.lower())}"
 
 
 def _validate_sampling_args(min_rows_per_group: int, max_rows: int) -> None:
@@ -122,42 +166,40 @@ def build_test_dataset_and_config(
 ) -> Dict[str, Dict[str, int]]:
     with source_config.open("r", encoding="utf-8") as f:
         cfg = json.load(f)
+    source_config_dir = source_config.resolve().parent
 
     output_data_dir.mkdir(parents=True, exist_ok=True)
     summary: Dict[str, Dict[str, int]] = {}
 
-    for genotype, geno_cfg in cfg.get("genotypes", {}).items():
-        for drug, drug_cfg in geno_cfg.get("drugs", {}).items():
-            src_path = Path(drug_cfg["path"])
-            if not src_path.exists():
-                raise FileNotFoundError(
-                    f"Source parquet does not exist for {genotype}/{drug}: {src_path}"
-                )
+    for genotype, drug, drug_cfg in _iter_genotype_drug_entries(cfg):
+        if "path" not in drug_cfg:
+            raise KeyError(f"Missing 'path' for {genotype}/{drug}")
+        src_path = _resolve_source_parquet(drug_cfg["path"], source_config_dir)
 
-            df = pd.read_parquet(src_path)
-            sampled = sample_representative_rows(
-                df,
-                random_state=random_state,
-                min_rows_per_group=min_rows_per_group,
-                max_rows=max_rows_per_dataset,
-            )
+        df = pd.read_parquet(src_path)
+        sampled = sample_representative_rows(
+            df,
+            random_state=random_state,
+            min_rows_per_group=min_rows_per_group,
+            max_rows=max_rows_per_dataset,
+        )
 
-            out_name = f"{_safe_name(genotype)}__{_safe_name(drug)}__sample.parquet"
-            out_path = output_data_dir / out_name
-            sampled.to_parquet(out_path, index=False)
+        out_name = f"{_safe_name(genotype)}__{_safe_name(drug)}__sample.parquet"
+        out_path = output_data_dir / out_name
+        sampled.to_parquet(out_path, index=False)
 
-            # Update config to reference repository-local test data.
-            drug_cfg["path"] = f"./{out_path.as_posix()}"
+        # Update config to reference repository-local test data.
+        drug_cfg["path"] = f"./{out_path.as_posix()}"
 
-            summary[f"{genotype}/{drug}"] = {
-                "source_rows": len(df),
-                "sampled_rows": len(sampled),
-                "columns": len(sampled.columns),
-                "grouping_columns_used": len(_sampling_groups(df)),
-            }
+        summary[f"{genotype}/{drug}"] = {
+            "source_rows": len(df),
+            "sampled_rows": len(sampled),
+            "columns": len(sampled.columns),
+            "grouping_columns_used": len(_sampling_groups(df)),
+        }
 
     cfg.setdefault("metadata", {})
-    cfg["metadata"]["output_dir"] = "./test_output_2cohort_tz"
+    cfg["metadata"]["output_dir"] = _default_test_output_dir(output_config)
 
     output_config.parent.mkdir(parents=True, exist_ok=True)
     with output_config.open("w", encoding="utf-8") as f:

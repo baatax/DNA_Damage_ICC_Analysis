@@ -15,13 +15,15 @@ module load cmake/3.23_gui
 source /cluster/tufts/levinlab/adebaa01/kk_venv/bin/activate
 # ----------------------------------------------
 # Generate repository-local test parquet datasets
-# from 2Cohort_TZ_config.json for internal testing.
+# from a source experiment config for internal testing.
 # ----------------------------------------------
 
 REPO_DIR="${REPO_DIR:-$PWD}"
-SOURCE_CONFIG="${SOURCE_CONFIG:-Pilot_1_config.json}"
-OUTPUT_CONFIG="${OUTPUT_CONFIG:-Pilot_1_test_config.json}"
-OUTPUT_DATA_DIR="${OUTPUT_DATA_DIR:-test_data/pilot1}"
+SOURCE_CONFIG="${SOURCE_CONFIG:-2Cohort_TZ_config.json}"
+SOURCE_BASENAME="$(basename "${SOURCE_CONFIG}")"
+SOURCE_STEM="${SOURCE_BASENAME%.json}"
+OUTPUT_CONFIG="${OUTPUT_CONFIG:-${SOURCE_STEM}_test_config.json}"
+OUTPUT_DATA_DIR="${OUTPUT_DATA_DIR:-test_data/${SOURCE_STEM%_config}}"
 MIN_ROWS_PER_GROUP="${MIN_ROWS_PER_GROUP:-5}"
 MAX_ROWS_PER_DATASET="${MAX_ROWS_PER_DATASET:-250}"
 SEED="${SEED:-42}"
