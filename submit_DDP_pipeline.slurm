@@ -6,8 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --output=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.out
 #SBATCH --error=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.err
-# #SBATCH --mail-user=your.email@institution.edu
-# #SBATCH --mail-type=END,FAIL
+
 
 # ============================================================================
 # DNA Damage Panel Analysis - Talazoparib
@@ -24,7 +23,7 @@
 # ============================================================================
 
 # --- Configuration ---
-CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/2Cohort_TZ_config.json"
+CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/Pilot_1_config.json"
 OUTPUT_DIR="/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output"
 N_WORKERS=8
 

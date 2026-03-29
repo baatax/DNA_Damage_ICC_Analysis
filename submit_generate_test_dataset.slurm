@@ -19,10 +19,10 @@ source /cluster/tufts/levinlab/adebaa01/kk_venv/bin/activate
 # ----------------------------------------------
 
 REPO_DIR="${REPO_DIR:-$PWD}"
-SOURCE_CONFIG="${SOURCE_CONFIG:-2Cohort_TZ_config.json}"
-OUTPUT_CONFIG="${OUTPUT_CONFIG:-2Cohort_TZ_test_config.json}"
-OUTPUT_DATA_DIR="${OUTPUT_DATA_DIR:-test_data/2cohort_tz}"
-MIN_ROWS_PER_GROUP="${MIN_ROWS_PER_GROUP:-5}"
+SOURCE_CONFIG="${SOURCE_CONFIG:-Pilot_1_config.json}"
+OUTPUT_CONFIG="${OUTPUT_CONFIG:-Pilot_1_test_config.json}"
+OUTPUT_DATA_DIR="${OUTPUT_DATA_DIR:-test_data/pilot1}"
+MIN_ROWS_PER_GROUP="${MIN_ROWS_PER_GROUP:-5}"A
 MAX_ROWS_PER_DATASET="${MAX_ROWS_PER_DATASET:-250}"
 SEED="${SEED:-42}"
 

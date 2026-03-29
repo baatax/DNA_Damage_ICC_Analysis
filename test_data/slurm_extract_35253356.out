@@ -1,0 +1,12 @@
+================================================
+DNA Damage test dataset extraction
+Job ID:                35253356
+Host:                  d1cmp019.pax.tufts.edu
+Repository:            /cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis
+Source config:         Pilot_1_config.json
+Output config:         Pilot_1_test_config.json
+Output data dir:       test_data/pilot1
+min_rows_per_group:    5A
+max_rows_per_dataset:  250
+seed:                  42
+================================================
