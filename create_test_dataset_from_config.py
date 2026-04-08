@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Dict, Iterator, List, Tuple
 
@@ -170,12 +171,19 @@ def build_test_dataset_and_config(
 
     output_data_dir.mkdir(parents=True, exist_ok=True)
     summary: Dict[str, Dict[str, int]] = {}
+    source_parents: List[Path] = []
+    entries: List[Tuple[str, str, Dict, Path]] = []
 
     for genotype, drug, drug_cfg in _iter_genotype_drug_entries(cfg):
         if "path" not in drug_cfg:
             raise KeyError(f"Missing 'path' for {genotype}/{drug}")
         src_path = _resolve_source_parquet(drug_cfg["path"], source_config_dir)
+        source_parents.append(src_path.parent)
+        entries.append((genotype, drug, drug_cfg, src_path))
 
+    source_root = Path(os.path.commonpath([str(p) for p in source_parents]))
+
+    for genotype, drug, drug_cfg, src_path in entries:
         df = pd.read_parquet(src_path)
         sampled = sample_representative_rows(
             df,
@@ -184,8 +192,10 @@ def build_test_dataset_and_config(
             max_rows=max_rows_per_dataset,
         )
 
-        out_name = f"{_safe_name(genotype)}__{_safe_name(drug)}__sample.parquet"
-        out_path = output_data_dir / out_name
+        rel_parent = src_path.parent.relative_to(source_root)
+        requested_name = Path(drug_cfg["path"]).name
+        out_path = output_data_dir / rel_parent / requested_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         sampled.to_parquet(out_path, index=False)
 
         # Update config to reference repository-local test data.

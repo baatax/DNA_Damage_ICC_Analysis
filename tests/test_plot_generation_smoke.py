@@ -53,22 +53,27 @@ class PlotGenerationSmokeTest(unittest.TestCase):
             pipeline = DNADamageProductionPipeline(config_path=config_path, resume=False, n_workers=1)
             pipeline.run()
 
-            log_path = out_dir / "logs" / "pipeline.log"
-            self.assertTrue(log_path.exists(), "pipeline log was not created")
+            timestamped_outputs = sorted(root.glob("analysis_results_*"))
+            self.assertTrue(timestamped_outputs, "timestamped output directory was not created")
+            run_out_dir = timestamped_outputs[-1]
+
+            log_candidates = list(run_out_dir.glob("pipeline_*.log"))
+            self.assertTrue(log_candidates, "pipeline log was not created")
+            log_path = log_candidates[-1]
             log_text = log_path.read_text(encoding="utf-8")
             match = re.search(r"Generated\s+(\d+)\s+plots", log_text)
             self.assertIsNotNone(match, "Step 10 did not report generated plots")
             self.assertGreater(int(match.group(1)), 0, "Step 10 generated zero plots")
 
-            self.assertTrue((out_dir / "plots" / "qc" / "well_qc_metrics_distributions.png").exists())
-            self.assertTrue((out_dir / "plots" / "qc" / "well_qc_metrics_qc_pass_counts.png").exists())
+            self.assertTrue((run_out_dir / "plots" / "qc" / "well_qc_metrics_distributions.png").exists())
+            self.assertTrue((run_out_dir / "plots" / "qc" / "well_qc_metrics_qc_pass_counts.png").exists())
 
-            dr_fits = list((out_dir / "plots" / "dose_response").glob("dose_response_fits_*_ec50.png"))
+            dr_fits = list((run_out_dir / "plots" / "dose_response").glob("dose_response_fits_*_ec50.png"))
             self.assertTrue(dr_fits, "dose-response fit plot not generated")
 
             pca_modes = ["across_all", "per_genotype"]
             found_pca = any(
-                (out_dir / "plots" / mode / f"profiles_pca_{mode}_pc1_pc2.png").exists()
+                (run_out_dir / "plots" / mode / f"profiles_pca_{mode}_pc1_pc2.png").exists()
                 for mode in pca_modes
             )
             self.assertTrue(found_pca, "PCA PC1/PC2 plot not generated")
