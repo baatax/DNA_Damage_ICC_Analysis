@@ -87,6 +87,17 @@ def setup_logging(
     return logger
 
 
+def with_timestamped_suffix(base_dir: Path) -> Path:
+    """Return a timestamped directory path based on ``base_dir``.
+
+    Example
+    -------
+    ``/tmp/results`` -> ``/tmp/results_20260408_123045``
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return base_dir.parent / f"{base_dir.name}_{timestamp}"
+
+
 # =============================================================================
 # IMPORT PIPELINE COMPONENTS
 # =============================================================================
@@ -216,11 +227,13 @@ class DNADamageProductionPipeline:
         
         # Set output directory
         if output_dir:
-            self.output_dir = Path(output_dir)
+            base_output_dir = Path(output_dir)
         elif self.config.output_dir:
-            self.output_dir = Path(self.config.output_dir)
+            base_output_dir = Path(self.config.output_dir)
         else:
-            self.output_dir = Path(f"./output_{self.config.experiment_name}")
+            base_output_dir = Path(f"./output_{self.config.experiment_name}")
+
+        self.output_dir = with_timestamped_suffix(base_output_dir)
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
         

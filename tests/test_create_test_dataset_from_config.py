@@ -110,6 +110,56 @@ def test_build_test_dataset_uses_numeric_parquet_fallback(tmp_path: Path):
     assert out_loaded["metadata"]["output_dir"] == "./test_output_pilot_test"
     assert (
         out_loaded["genotypes"]["G1"]["drugs"]["Talazoparib"]["path"]
-        == "./"
-        + (out_data / "G1__Talazoparib__sample.parquet").as_posix()
+        == "./" + (out_data / "single_cell_features.parquet").as_posix()
+    )
+
+
+def test_build_test_dataset_preserves_nested_input_folder_structure(tmp_path: Path):
+    src_root = tmp_path / "source"
+    nested_dir_a = src_root / "batch_a" / "WT" / "Etoposide"
+    nested_dir_b = src_root / "batch_b" / "WT" / "Talazoparib"
+    nested_dir_a.mkdir(parents=True)
+    nested_dir_b.mkdir(parents=True)
+    src_parquet_a = nested_dir_a / "single_cell_features.parquet"
+    src_parquet_b = nested_dir_b / "single_cell_features.parquet"
+    pd.DataFrame({"Dilut": ["DMSO", "1uM"], "feature_a": [1.0, 2.0]}).to_parquet(src_parquet_a, index=False)
+    pd.DataFrame({"Dilut": ["DMSO", "3uM"], "feature_a": [3.0, 4.0]}).to_parquet(src_parquet_b, index=False)
+
+    cfg = {
+        "metadata": {"output_dir": "./old"},
+        "genotypes": {
+            "WT": {
+                "drugs": {
+                    "Etoposide": {"path": str(src_parquet_a), "ec50_um": 1.0},
+                    "Talazoparib": {"path": str(src_parquet_b), "ec50_um": 2.0},
+                }
+            }
+        },
+    }
+    src_cfg = tmp_path / "source_config.json"
+    out_cfg = tmp_path / "test_config.json"
+    out_data = tmp_path / "test_data"
+    src_cfg.write_text(json.dumps(cfg), encoding="utf-8")
+
+    build_test_dataset_and_config(
+        source_config=src_cfg,
+        output_config=out_cfg,
+        output_data_dir=out_data,
+        min_rows_per_group=1,
+        max_rows_per_dataset=10,
+        random_state=0,
+    )
+
+    expected_output_a = out_data / "batch_a" / "WT" / "Etoposide" / "single_cell_features.parquet"
+    expected_output_b = out_data / "batch_b" / "WT" / "Talazoparib" / "single_cell_features.parquet"
+    assert expected_output_a.exists()
+    assert expected_output_b.exists()
+    out_loaded = json.loads(out_cfg.read_text(encoding="utf-8"))
+    assert (
+        out_loaded["genotypes"]["WT"]["drugs"]["Etoposide"]["path"]
+        == "./" + expected_output_a.as_posix()
+    )
+    assert (
+        out_loaded["genotypes"]["WT"]["drugs"]["Talazoparib"]["path"]
+        == "./" + expected_output_b.as_posix()
     )
