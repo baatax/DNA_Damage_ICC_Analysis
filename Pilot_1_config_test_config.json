@@ -1,0 +1,157 @@
+{
+  "metadata": {
+    "experiment_name": "DNA_Damage_Panel_Talazoparib",
+    "date": "2026-02-25",
+    "researcher": "",
+    "description": "DNA damage panel analysis across WT and KO-related dataset folders treated with Talazoparib (TZ), inferred from folder naming under /cluster/tufts/levinlab/adebaa01/DATASETS_DNA_Damage_Panel",
+    "control_label": "DMSO",
+    "dilut_column": "Dilut",
+    "output_dir": "./test_output_pilot_1_test",
+    "notes": "Config inferred from dataset folder names only. 3x dilution series and EC50 values were not directly inferable from folder names. Paths assume per-dataset file location at DNA_Damage_Panel/single_cell_features_numeric.parquet."
+  },
+  "genotypes": {
+    "1KO-512nM-CTRL": {
+      "description": "Knockout condition with 512 nM background/condition and CTRL label",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/1KO-512nM-CTRL__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "1KO-P1-CTRL": {
+      "description": "Knockout P1 condition with CTRL label",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/1KO-P1-CTRL__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "1KO-512nM": {
+      "description": "Knockout condition with 512 nM background/condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/1KO-512nM__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "512nM",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2KO-NV": {
+      "description": "Knockout NV condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2KO-NV__Talazoparib__sample.parquet",
+          "ec50_um": 0.01,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "1KO-P1": {
+      "description": "Knockout P1 condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/1KO-P1__Talazoparib__sample.parquet",
+          "ec50_um": 100,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only; folder indicates 10K seeding"
+        }
+      }
+    },
+    "2KO-P1": {
+      "description": "Knockout P1 condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2KO-P1__Talazoparib__sample.parquet",
+          "ec50_um": 100,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2WT-P1": {
+      "description": "Wild-type P1 condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2WT-P1__Talazoparib__sample.parquet",
+          "ec50_um": 100,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2KO-P1-CTRL": {
+      "description": "Knockout P1 condition with CTRL label",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2KO-P1-CTRL__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2WT-P1-CTRL": {
+      "description": "Wild-type P1 condition with CTRL label",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2WT-P1-CTRL__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2KO-128nM-CTRL": {
+      "description": "Knockout condition with 128 nM background/condition and CTRL label",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2KO-128nM-CTRL__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    },
+    "2KO-128nM": {
+      "description": "Knockout condition with 128 nM background/condition",
+      "drugs": {
+        "Talazoparib": {
+          "path": "./test_data/Pilot_1/2KO-128nM__Talazoparib__sample.parquet",
+          "ec50_um": 1,
+          "max_dose": "128nM",
+          "moa": "PARP inhibitor",
+          "dilution_factor": 3,
+          "notes": "Inferred from folder name only"
+        }
+      }
+    }
+  }
+}

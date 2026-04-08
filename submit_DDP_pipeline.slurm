@@ -23,7 +23,7 @@
 # ============================================================================
 
 # --- Configuration ---
-CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/Pilot_1_config.json"
+CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/Pilot_1_fully_adapted.json"
 OUTPUT_DIR="/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output"
 N_WORKERS=8
 

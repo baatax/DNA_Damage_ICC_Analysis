@@ -1,7 +1,0 @@
-usage: create_test_dataset_from_config.py [-h] [--source-config SOURCE_CONFIG]
-                                          [--output-config OUTPUT_CONFIG]
-                                          [--output-data-dir OUTPUT_DATA_DIR]
-                                          [--min-rows-per-group MIN_ROWS_PER_GROUP]
-                                          [--max-rows-per-dataset MAX_ROWS_PER_DATASET]
-                                          [--seed SEED]
-create_test_dataset_from_config.py: error: argument --min-rows-per-group: invalid int value: '5A'

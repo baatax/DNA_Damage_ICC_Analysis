@@ -19,7 +19,7 @@ source /cluster/tufts/levinlab/adebaa01/kk_venv/bin/activate
 # ----------------------------------------------
 
 REPO_DIR="${REPO_DIR:-$PWD}"
-SOURCE_CONFIG="${SOURCE_CONFIG:-2Cohort_TZ_config.json}"
+SOURCE_CONFIG="${SOURCE_CONFIG:-Pilot_1_config.json}"
 SOURCE_BASENAME="$(basename "${SOURCE_CONFIG}")"
 SOURCE_STEM="${SOURCE_BASENAME%.json}"
 OUTPUT_CONFIG="${OUTPUT_CONFIG:-${SOURCE_STEM}_test_config.json}"
