@@ -118,14 +118,28 @@ echo "End Time:     $(date)"
 echo "=============================================="
 
 # --- List output files ---
+# The pipeline appends a timestamp suffix to OUTPUT_DIR, so look for the
+# most recent timestamped directory alongside the base path.
+ACTUAL_OUTPUT=$(ls -dt ${OUTPUT_DIR}_* 2>/dev/null | head -1)
+if [ -z "${ACTUAL_OUTPUT}" ]; then
+    ACTUAL_OUTPUT=${OUTPUT_DIR}
+fi
+
 echo ""
+echo "Output directory: ${ACTUAL_OUTPUT}"
 echo "Output files:"
 echo "----------------------------------------------"
-find ${OUTPUT_DIR} -type f -name "*.csv" -o -name "*.json" -o -name "*.parquet" | head -50
+find "${ACTUAL_OUTPUT}" -type f \( -name "*.csv" -o -name "*.png" -o -name "*.json" -o -name "*.parquet" \) | head -80
+
+echo ""
+echo "Plots:"
+echo "----------------------------------------------"
+find "${ACTUAL_OUTPUT}" -type f -name "*.png" | wc -l
+echo " plot files generated"
 
 # --- Print disk usage ---
 echo ""
 echo "Disk usage:"
-du -sh ${OUTPUT_DIR}
+du -sh "${ACTUAL_OUTPUT}"
 
 exit ${PIPELINE_EXIT_CODE}

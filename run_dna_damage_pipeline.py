@@ -364,13 +364,19 @@ class DNADamageProductionPipeline:
             # Step 8: Dose-response analysis
             output_files.update(self._step_dose_response_analysis())
             
-            # Step 9: Statistical comparisons
-            output_files.update(self._step_statistical_comparisons())
-            
-            # Step 10: Generate plots from CSV outputs
+            # Step 9: Generate plots from CSV outputs
+            # Run plotting before the slow statistical bootstrap so that
+            # plots are available even if the job hits a SLURM time limit
+            # during the bootstrap step.
             output_files.update(self._step_generate_plots(output_files))
-            
-            # Step 11: Save manifest
+
+            # Step 10: Statistical comparisons
+            output_files.update(self._step_statistical_comparisons())
+
+            # Step 11: Generate plots for any new statistics CSVs
+            output_files.update(self._step_generate_statistics_plots(output_files))
+
+            # Step 12: Save manifest
             self._save_manifest(output_files)
             
             total_time = time.time() - start_time
@@ -852,8 +858,8 @@ class DNADamageProductionPipeline:
         return output_files
     
     def _step_statistical_comparisons(self) -> Dict[str, Path]:
-        """Step 9: Perform statistical comparisons between genotypes."""
-        step = "9_statistics"
+        """Step 10: Perform statistical comparisons between genotypes."""
+        step = "10_statistics"
         output_files = {}
         
         if self.resume and self.checkpoint.is_complete(step):
@@ -924,8 +930,8 @@ class DNADamageProductionPipeline:
         return output_files
 
     def _step_generate_plots(self, output_files: Dict[str, Path]) -> Dict[str, Path]:
-        """Step 10: Generate plots from CSV outputs."""
-        step = "10_generate_plots"
+        """Step 9: Generate plots from CSV outputs."""
+        step = "9_generate_plots"
         plot_files: Dict[str, Path] = {}
 
         existing_plot_count = len(list((self.output_dir / "plots").rglob("*.png")))
@@ -953,6 +959,41 @@ class DNADamageProductionPipeline:
 
         self._log_timing(step, time.time() - start)
         self._log_step(step, f"Generated {len(plot_files)} plots")
+        self.checkpoint.mark_complete(step)
+
+        return plot_files
+
+    def _step_generate_statistics_plots(self, output_files: Dict[str, Path]) -> Dict[str, Path]:
+        """Step 11: Generate plots for statistics CSVs produced after the main plotting pass."""
+        step = "11_generate_statistics_plots"
+        plot_files: Dict[str, Path] = {}
+
+        if self.resume and self.checkpoint.is_complete(step):
+            self._log_step(step, "Skipping (already complete)")
+            return plot_files
+
+        stats_csvs = [
+            Path(p) for k, p in output_files.items()
+            if str(p).endswith(".csv") and (
+                k.startswith("ec50_bootstrap_") or k.startswith("genotype_comparison_")
+            )
+        ]
+        if not stats_csvs:
+            self.checkpoint.mark_complete(step)
+            return plot_files
+
+        self._log_step(step, f"Generating plots for {len(stats_csvs)} statistics CSVs...")
+        start = time.time()
+
+        plotter = PlotGenerator(self.output_dir, logger=self.logger)
+        results = plotter.generate_plots(stats_csvs)
+        for result in results:
+            for plot_path in result.plot_paths:
+                key = f"plot::{result.csv_path.stem}::{plot_path.name}"
+                plot_files[key] = plot_path
+
+        self._log_timing(step, time.time() - start)
+        self._log_step(step, f"Generated {len(plot_files)} statistics plots")
         self.checkpoint.mark_complete(step)
 
         return plot_files
