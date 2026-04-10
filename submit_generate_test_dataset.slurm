@@ -10,7 +10,7 @@
 set -euo pipefail
 
 module purge
-module load gcc/11.2.0
+module load modtree/deprecated gcc/11.2.0
 module load cmake/3.23_gui
 source /cluster/tufts/levinlab/adebaa01/kk_venv/bin/activate
 # ----------------------------------------------
