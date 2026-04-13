@@ -71,8 +71,9 @@ class PlotGenerator:
             (lambda p: p.name == "fold_change_vs_control.csv", self._handle_fold_change),
             (lambda p: p.name.startswith("ec50_bootstrap_"), self._handle_ec50_bootstrap),
             (lambda p: p.name.startswith("genotype_comparison_"), self._handle_genotype_comparison),
-            (lambda p: p.name.startswith("well_profiles_"), self._handle_well_profiles),
-            (lambda p: p.name.startswith("well_effects_"), self._handle_well_effects),
+            (lambda p: p.name.startswith("distance_heatmap_"), self._handle_distance_heatmap),
+            (lambda p: p.name.startswith("well_profiles_") or p.name.startswith("profiles_pca_"), self._handle_well_profiles),
+            (lambda p: p.name.startswith("well_effects_") or p.name.startswith("profiles_delta"), self._handle_well_effects),
         ]
 
     def _log(self, msg: str) -> None:
@@ -299,34 +300,42 @@ class PlotGenerator:
         return out
 
     def _mode_from_name(self, name: str) -> str:
-        for mode in ["across_all", "per_genotype"]:
+        for mode in ["uncorrected", "crowding_corrected", "across_all", "per_genotype"]:
             if mode in name:
                 return mode
-        return "across_all"
+        return "uncorrected"
 
     def _handle_well_profiles(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         mode = self._mode_from_name(csv_path.stem)
         plot_dir = self.output_dir / "plots" / mode
-        # dose series for gamma_h2ax if present
         out: list[Path] = []
         df = self._as_numeric_dose(df)
-        feature = "gamma_h2ax_nuclear_mean"
-        if {"dilut_um", feature}.issubset(df.columns):
-            fig, ax = plt.subplots(figsize=(7, 4.5))
+
+        # Generic dose-series for key response features (H2Ax foci, Ki67, etc.)
+        response_candidates = [
+            "foci_mean_per_cell", "ki67_positive_fraction",
+            "gamma_h2ax_mean_intensity", "phenotype_magnitude",
+        ]
+        if "dilut_um" in df.columns:
             gcols = [c for c in ["genotype", "drug"] if c in df.columns]
-            grp = df[gcols + ["dilut_um", feature]].dropna().groupby(gcols + ["dilut_um"], as_index=False)[feature].median()
-            for name, sub in grp.groupby(gcols):
-                label = name if isinstance(name, str) else " | ".join(map(str, name))
-                sub = sub.sort_values("dilut_um")
-                ax.plot(sub["dilut_um"], sub[feature], marker="o", label=label)
-            if (grp["dilut_um"] > 0).any():
-                ax.set_xscale("log")
-            ax.set_xlabel("dilut_um")
-            ax.set_ylabel(feature)
-            ax.set_title(f"Well profiles {feature} ({mode})")
-            if gcols:
-                ax.legend(fontsize=7)
-            out.append(self._save(fig, plot_dir / f"well_profiles_ALL_{mode}_{feature}.png"))
+            for feature in response_candidates:
+                if feature not in df.columns:
+                    continue
+                fig, ax = plt.subplots(figsize=(7, 4.5))
+                grp = df[gcols + ["dilut_um", feature]].dropna().groupby(
+                    gcols + ["dilut_um"], as_index=False)[feature].median()
+                for name, sub in grp.groupby(gcols):
+                    label = name if isinstance(name, str) else " | ".join(map(str, name))
+                    sub = sub.sort_values("dilut_um")
+                    ax.plot(sub["dilut_um"], sub[feature], marker="o", label=label)
+                if (grp["dilut_um"] > 0).any():
+                    ax.set_xscale("log")
+                ax.set_xlabel("dose (uM)")
+                ax.set_ylabel(feature)
+                ax.set_title(f"{feature} ({mode})")
+                if gcols:
+                    ax.legend(fontsize=7)
+                out.append(self._save(fig, plot_dir / f"well_profiles_{mode}_{self._safe_name(feature)}.png"))
 
         # correlation heatmap
         numeric = df.select_dtypes(include=[np.number]).copy()
@@ -343,7 +352,7 @@ class PlotGenerator:
             ax.set_yticks(range(len(corr.columns)))
             ax.set_yticklabels(corr.columns, fontsize=7)
             ax.set_title(f"Well feature correlation ({mode})")
-            out.append(self._save(fig, self.output_dir / "plots" / "statistics" / f"well_feature_correlation_heatmap_{mode}.png"))
+            out.append(self._save(fig, self.output_dir / "plots" / "clustering" / f"well_feature_correlation_heatmap_{mode}.png"))
         return out
 
     def _handle_well_effects(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
@@ -351,22 +360,31 @@ class PlotGenerator:
         plot_dir = self.output_dir / "plots" / mode
         out: list[Path] = []
         df = self._as_numeric_dose(df)
-        metric = "gamma_h2ax_nuclear_mean_delta"
-        if {"dilut_um", metric}.issubset(df.columns):
+
+        # Generic dose-series for delta/effect columns
+        delta_candidates = [
+            "foci_mean_per_cell_delta", "ki67_positive_fraction_delta",
+            "gamma_h2ax_mean_intensity_delta", "phenotype_magnitude",
+        ]
+        if "dilut_um" not in df.columns:
+            return out
+        gcols = [c for c in ["genotype", "drug"] if c in df.columns]
+        for metric in delta_candidates:
+            if metric not in df.columns:
+                continue
             fig, ax = plt.subplots(figsize=(7, 4.5))
-            gcols = [c for c in ["genotype", "drug"] if c in df.columns]
             for name, sub in df[gcols + ["dilut_um", metric]].dropna().groupby(gcols):
                 label = name if isinstance(name, str) else " | ".join(map(str, name))
                 q = sub.groupby("dilut_um")[metric].median().reset_index().sort_values("dilut_um")
                 ax.plot(q["dilut_um"], q[metric], marker="o", label=label)
             if (df["dilut_um"] > 0).any():
                 ax.set_xscale("log")
-            ax.set_xlabel("dilut_um")
+            ax.set_xlabel("dose (uM)")
             ax.set_ylabel(metric)
-            ax.set_title(f"Well effects {metric} ({mode})")
+            ax.set_title(f"{metric} ({mode})")
             if gcols:
                 ax.legend(fontsize=7)
-            out.append(self._save(fig, plot_dir / f"well_effects_ALL_{mode}_gamma_h2ax_nuclear_mean.png"))
+            out.append(self._save(fig, plot_dir / f"well_effects_{mode}_{self._safe_name(metric)}.png"))
         return out
 
     def _handle_pca_profiles(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
@@ -552,6 +570,25 @@ class PlotGenerator:
             ax.set_title(f"EC50 forest proxy: {response}")
             out.append(self._save(fig, self.output_dir / "plots" / "statistics" / f"ec50_forest_{self._safe_name(response)}.png"))
         return out
+
+    def _handle_distance_heatmap(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
+        if df.empty or df.shape[0] < 2 or df.shape[1] < 2:
+            return []
+        mode = self._mode_from_name(csv_path.stem)
+        # The CSV is a square correlation-distance matrix with row/col labels
+        labels = df.iloc[:, 0].astype(str).tolist() if not df.columns[0].startswith("Unnamed") else df.index.astype(str).tolist()
+        mat = df.select_dtypes(include=[np.number]).values
+        if mat.shape[0] < 2:
+            return []
+        fig, ax = plt.subplots(figsize=(max(6, len(labels) * 0.4), max(5, len(labels) * 0.35)))
+        im = ax.imshow(mat, cmap="viridis", aspect="auto")
+        fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=90, fontsize=7)
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=7)
+        ax.set_title(f"Correlation distance ({mode})")
+        return [self._save(fig, self.output_dir / "plots" / "clustering" / f"distance_heatmap_{mode}.png")]
 
     def _fallback_generic(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         numeric = df.select_dtypes(include=[np.number]).columns.tolist()

@@ -22,13 +22,10 @@ from typing import Dict, List
 # Import pipeline components
 from dna_damage_parquet_pipeline import (
     ExperimentConfig,
-    DNADamageAnalysisPipeline,
     DNADamageDataLoader,
     DNADamagePreprocessor,
     CrowdingAnalyzer,
     QCMetricsCompiler,
-    run_pipeline_from_json,
-    create_example_config,
     parse_dilution_string,
 )
 
@@ -279,36 +276,29 @@ def create_test_config(parquet_paths: Dict, output_path: Path) -> Path:
 
 def example_basic_pipeline():
     """Example: Run the basic pipeline from a JSON config."""
+    from run_dna_damage_pipeline import DNADamageProductionPipeline
+
     print("\n" + "="*70)
     print("EXAMPLE: Basic Pipeline Execution")
     print("="*70)
-    
+
     # Create test data directory
     test_dir = Path("./test_dna_damage_data")
     test_dir.mkdir(exist_ok=True)
-    
+
     print("\n1. Generating synthetic test data...")
     parquet_paths = create_test_dataset(test_dir / "parquets")
-    
+
     print("\n2. Creating configuration file...")
     config_path = create_test_config(parquet_paths, test_dir / "test_config.json")
     print(f"   Config saved to: {config_path}")
-    
+
     print("\n3. Running analysis pipeline...")
-    results = run_pipeline_from_json(config_path)
-    
-    print("\n4. Pipeline complete! Output files:")
-    for name, path in results.items():
-        if isinstance(path, dict):
-            print(f"   {name}:")
-            for k, v in list(path.items())[:3]:
-                print(f"      {k}: {v}")
-            if len(path) > 3:
-                print(f"      ... and {len(path)-3} more files")
-        else:
-            print(f"   {name}: {path}")
-    
-    return results
+    pipeline = DNADamageProductionPipeline(config_path=config_path, resume=False, n_workers=1)
+    pipeline.run()
+
+    print("\n4. Pipeline complete!")
+    return config_path
 
 
 def example_dose_response_analysis():
@@ -431,16 +421,19 @@ def example_genotype_comparison():
     for _, row in fits.iterrows():
         print(f"   {row['genotype']}: EC50 = {row['ec50']:.3f} uM (R^2 = {row['r_squared']:.3f})")
     
-    # Statistical comparison
-    print("\n3. Comparing EC50 values between genotypes...")
+    # Statistical comparison (bootstrap)
+    print("\n3. Comparing EC50 values between genotypes (bootstrap)...")
     comparator = StatisticalComparator()
-    comparisons = comparator.compare_ec50s(fits, groupby='genotype')
-    
+    comparisons = comparator.compare_ec50s_bootstrap(fits, groupby='genotype')
+
     if not comparisons.empty:
         print("\n   EC50 comparisons:")
         for _, row in comparisons.iterrows():
+            ratio_col = 'ec50_ratio' if 'ec50_ratio' in row.index else 'median_ratio'
+            p_col = 'p_value' if 'p_value' in row.index else 'p_bootstrap'
             print(f"   {row['genotype_1']} vs {row['genotype_2']}: "
-                  f"ratio = {row['ec50_ratio']:.2f}x, p = {row['p_value']:.4f}")
+                  f"ratio = {row.get(ratio_col, float('nan')):.2f}x, "
+                  f"p = {row.get(p_col, float('nan')):.4f}")
     
     # Compare responses at specific dose
     print("\n4. Comparing responses at 10 uM...")

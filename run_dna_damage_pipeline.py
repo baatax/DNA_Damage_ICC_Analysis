@@ -247,11 +247,7 @@ class DNADamageProductionPipeline:
         
         # Initialize components
         self.loader = DNADamageDataLoader(self.config)
-        self.preprocessor_per_geno = DNADamagePreprocessor(
-            norm_method="robust_zscore",
-            batch_col="plate",
-        )
-        self.preprocessor_across = DNADamagePreprocessor(
+        self.preprocessor = DNADamagePreprocessor(
             norm_method="robust_zscore",
             batch_col="plate",
         )
@@ -271,38 +267,39 @@ class DNADamageProductionPipeline:
         )
         self.statistical_comparator = StatisticalComparator()
         self.qc_config = self.config.qc
-        
+
         # Data storage
         self.raw_data: Optional[pd.DataFrame] = None
-        self.data_per_geno: Optional[pd.DataFrame] = None
-        self.data_across_all: Optional[pd.DataFrame] = None
-        self.filtered_raw_data: Optional[pd.DataFrame] = None
+        self.well_profiles: Optional[pd.DataFrame] = None
+        self.well_profiles_norm: Optional[pd.DataFrame] = None
         self.qc_well_table: Optional[pd.DataFrame] = None
-        self.well_profiles: Dict[str, pd.DataFrame] = {}
-        self.well_effects: Dict[str, pd.DataFrame] = {}
-        self.feature_cols_per_geno: List[str] = []
-        self.feature_cols_across: List[str] = []
-        
+        self.feature_cols: List[str] = []
+        self.crowding_excluded: List[str] = []
+
         # Track timing
         self.timing: Dict[str, float] = {}
     
     def _setup_directories(self):
-        """Create output directory structure."""
+        """Create output directory structure matching ANALYSIS_OVERVIEW."""
         dirs = [
             self.output_dir,
-            self.output_dir / "per_genotype",
-            self.output_dir / "across_all",
+            self.output_dir / "tables",
             self.output_dir / "crowding",
-            self.output_dir / "qc",
-            self.output_dir / "per_well",
-            self.output_dir / "per_well" / "per_genotype",
-            self.output_dir / "per_well" / "across_all",
-            self.output_dir / "pca",
-            self.output_dir / "pca" / "per_genotype",
-            self.output_dir / "pca" / "across_all",
-            self.output_dir / "dose_response",
-            self.output_dir / "statistics",
+            self.output_dir / "plots" / "qc",
+            self.output_dir / "plots" / "normalization",
         ]
+        for variant in ("uncorrected", "crowding_corrected"):
+            dirs.extend([
+                self.output_dir / variant / "tables",
+                self.output_dir / variant / "models",
+                self.output_dir / variant / "plots" / "embedding",
+                self.output_dir / variant / "plots" / "per_channel",
+                self.output_dir / variant / "plots" / "clustering",
+                self.output_dir / variant / "plots" / "ec50_focused",
+                self.output_dir / variant / "plots" / "dmso_controls",
+                self.output_dir / variant / "plots" / "per_drug",
+                self.output_dir / variant / "plots" / "dose_response",
+            ])
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
     
@@ -316,16 +313,22 @@ class DNADamageProductionPipeline:
         self.logger.info(f"[{step}] Completed in {duration:.2f} seconds")
     
     def run(self) -> Dict[str, Path]:
-        """
-        Run the complete analysis pipeline.
-        
-        Returns
-        -------
-        dict
-            Dictionary mapping output names to file paths
+        """Run the complete analysis pipeline (ANALYSIS_OVERVIEW flow).
+
+        Flow
+        ----
+        1. Load & concatenate datasets
+        2. Single-cell QC filtering
+        3. Aggregate to well-level profiles
+        4. Well QC + outlier removal
+        5. Normalize well-level features
+        6. Crowding correction (identify correlated features)
+        7. Branch into ``uncorrected`` / ``crowding_corrected`` variants
+        8. Per-variant: PCA, per-channel PCA, distance heatmaps,
+           EC50-focused PCA, DMSO PCA, per-drug PCA, dose-response
         """
         start_time = time.time()
-        
+
         self.logger.info("=" * 70)
         self.logger.info("DNA DAMAGE PANEL ANALYSIS PIPELINE")
         self.logger.info("=" * 70)
@@ -335,68 +338,57 @@ class DNADamageProductionPipeline:
         self.logger.info(f"Workers: {self.n_workers}")
         self.logger.info(f"Resume: {self.resume}")
         self.logger.info("=" * 70)
-        
+
         self._setup_directories()
-        output_files = {}
-        
+        output_files: Dict[str, Path] = {}
+
         try:
-            # Step 1: Load data
+            # Step 1: Load & concatenate datasets
             output_files.update(self._step_load_data())
-            
-            # Step 2: Preprocess per-genotype
-            output_files.update(self._step_preprocess_per_genotype())
-            
-            # Step 3: Preprocess across-all
-            output_files.update(self._step_preprocess_across_all())
-            
-            # Step 4: Compile crowding metrics
-            output_files.update(self._step_compile_crowding())
-            
-            # Step 5: Compile QC metrics
-            output_files.update(self._step_compile_qc())
-            
-            # Step 6: Generate per-well CSVs
-            output_files.update(self._step_generate_per_well())
-            
-            # Step 7: Compute profiles and PCA
-            output_files.update(self._step_compute_pca())
-            
-            # Step 8: Dose-response analysis
-            output_files.update(self._step_dose_response_analysis())
-            
-            # Step 9: Generate plots from CSV outputs
-            # Run plotting before the slow statistical bootstrap so that
-            # plots are available even if the job hits a SLURM time limit
-            # during the bootstrap step.
+
+            # Step 2: Single-cell QC filtering
+            output_files.update(self._step_single_cell_qc())
+
+            # Step 3: Aggregate to well-level profiles
+            output_files.update(self._step_aggregate_wells())
+
+            # Step 4: Well QC + outlier removal
+            output_files.update(self._step_well_qc())
+
+            # Step 5: Normalize well-level features
+            output_files.update(self._step_normalize())
+
+            # Step 6: Crowding correction
+            output_files.update(self._step_crowding_correction())
+
+            # Step 7-8: Run both variants
+            for variant in ("uncorrected", "crowding_corrected"):
+                output_files.update(self._run_variant(variant))
+
+            # Generate plots from CSV outputs
             output_files.update(self._step_generate_plots(output_files))
 
-            # Step 10: Statistical comparisons
-            output_files.update(self._step_statistical_comparisons())
-
-            # Step 11: Generate plots for any new statistics CSVs
-            output_files.update(self._step_generate_statistics_plots(output_files))
-
-            # Step 12: Save manifest
+            # Save manifest
             self._save_manifest(output_files)
-            
+
             total_time = time.time() - start_time
             self.logger.info("=" * 70)
             self.logger.info("PIPELINE COMPLETE")
             self.logger.info(f"Total time: {total_time:.2f} seconds ({total_time/60:.1f} minutes)")
             self.logger.info(f"Results: {self.output_dir}")
             self.logger.info("=" * 70)
-            
+
         except Exception as e:
             self.logger.error(f"Pipeline failed: {e}")
             self.logger.error(traceback.format_exc())
             raise
-        
+
         return output_files
     
     def _step_load_data(self) -> Dict[str, Path]:
-        """Step 1: Load all parquet data."""
+        """Step 1: Load & concatenate all parquet data."""
         step = "1_load_data"
-        
+
         if self.resume and self.checkpoint.is_complete(step):
             self._log_step(step, "Loading from checkpoint...")
             cache_path = self.output_dir / "cache" / "raw_data.parquet"
@@ -404,534 +396,673 @@ class DNADamageProductionPipeline:
                 self.raw_data = pd.read_parquet(cache_path)
                 self._log_step(step, f"Loaded {len(self.raw_data):,} cells from cache")
                 return {}
-        
+
         self._log_step(step, "Loading parquet files...")
         start = time.time()
-        
+
         self.raw_data = self.loader.load_all()
-        
+
         if self.raw_data.empty:
             raise ValueError("No data loaded. Check file paths in configuration.")
-        
+
+        # Identify feature columns once for the whole pipeline
+        exclude = set(self.preprocessor.METADATA_COLS + self.preprocessor.QC_COLS)
+        numeric_cols = self.raw_data.select_dtypes(include=[np.number]).columns.tolist()
+        self.feature_cols = [c for c in numeric_cols if c not in exclude]
+
         # Cache raw data for resume
         cache_dir = self.output_dir / "cache"
         cache_dir.mkdir(exist_ok=True)
         self.raw_data.to_parquet(cache_dir / "raw_data.parquet", index=False)
-        
+
         self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Loaded {len(self.raw_data):,} cells")
+        self._log_step(step, f"Loaded {len(self.raw_data):,} cells, {len(self.feature_cols)} features")
         self._log_step(step, f"Genotypes: {self.raw_data['genotype'].unique().tolist()}")
         self._log_step(step, f"Drugs: {self.raw_data['drug'].unique().tolist()}")
-        
+
         self.checkpoint.mark_complete(step, {
             "n_cells": len(self.raw_data),
             "genotypes": self.raw_data['genotype'].unique().tolist(),
             "drugs": self.raw_data['drug'].unique().tolist(),
+            "feature_cols": self.feature_cols,
         })
-        
+
         return {}
     
-    def _step_preprocess_per_genotype(self) -> Dict[str, Path]:
-        """Step 2: Preprocess with per-genotype normalization."""
-        step = "2_preprocess_per_genotype"
-        
+    def _step_single_cell_qc(self) -> Dict[str, Path]:
+        """Step 2: Single-cell QC filtering (area percentile, etc.)."""
+        step = "2_single_cell_qc"
+        output_files: Dict[str, Path] = {}
+
         if self.resume and self.checkpoint.is_complete(step):
             self._log_step(step, "Loading from checkpoint...")
-            cache_path = self.output_dir / "cache" / "data_per_geno.parquet"
+            cache_path = self.output_dir / "cache" / "raw_data_qc.parquet"
             if cache_path.exists():
-                self.data_per_geno = pd.read_parquet(cache_path)
-                self.feature_cols_per_geno = self.checkpoint.get_metadata(step).get("feature_cols", [])
+                self.raw_data = pd.read_parquet(cache_path)
                 return {}
-        
-        self._log_step(step, "Preprocessing (per-genotype normalization)...")
+
+        self._log_step(step, "Running single-cell QC...")
         start = time.time()
-        
-        self.data_per_geno, self.feature_cols_per_geno = (
-            self.preprocessor_per_geno.preprocess_per_genotype(self.raw_data)
-        )
-        
-        # Cache
+        n_before = len(self.raw_data)
+
+        # Area-based percentile filtering by plate
+        if 'area' in self.raw_data.columns and 'plate' in self.raw_data.columns:
+            def _area_filter(group: pd.DataFrame) -> pd.DataFrame:
+                lo = group['area'].quantile(0.01)
+                hi = group['area'].quantile(0.99)
+                return group[(group['area'] >= lo) & (group['area'] <= hi)]
+            self.raw_data = self.raw_data.groupby('plate', group_keys=False).apply(_area_filter)
+
+        n_after = len(self.raw_data)
+        self._log_step(step, f"Kept {n_after:,}/{n_before:,} cells after area QC")
+
+        # Write cell QC summary
+        summary = pd.DataFrame([{
+            'cells_before': n_before, 'cells_after': n_after,
+            'cells_removed': n_before - n_after,
+        }])
+        qc_path = self.output_dir / "tables" / "cell_qc_summary.parquet"
+        summary.to_parquet(qc_path, index=False)
+        output_files['cell_qc_summary'] = qc_path
+
         cache_dir = self.output_dir / "cache"
-        self.data_per_geno.to_parquet(cache_dir / "data_per_geno.parquet", index=False)
-        
+        cache_dir.mkdir(exist_ok=True)
+        self.raw_data.to_parquet(cache_dir / "raw_data_qc.parquet", index=False)
+
         self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Feature columns: {len(self.feature_cols_per_geno)}")
-        
-        self.checkpoint.mark_complete(step, {
-            "feature_cols": self.feature_cols_per_geno,
-        })
-        
-        return {}
-    
-    def _step_preprocess_across_all(self) -> Dict[str, Path]:
-        """Step 3: Preprocess with across-all normalization."""
-        step = "3_preprocess_across_all"
-        
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Loading from checkpoint...")
-            cache_path = self.output_dir / "cache" / "data_across_all.parquet"
-            if cache_path.exists():
-                self.data_across_all = pd.read_parquet(cache_path)
-                self.feature_cols_across = self.checkpoint.get_metadata(step).get("feature_cols", [])
-                return {}
-        
-        self._log_step(step, "Preprocessing (across-all normalization)...")
-        start = time.time()
-        
-        self.data_across_all, self.feature_cols_across = (
-            self.preprocessor_across.preprocess_across_all(self.raw_data)
-        )
-        
-        # Cache
-        cache_dir = self.output_dir / "cache"
-        self.data_across_all.to_parquet(cache_dir / "data_across_all.parquet", index=False)
-        
-        self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Feature columns: {len(self.feature_cols_across)}")
-        
-        self.checkpoint.mark_complete(step, {
-            "feature_cols": self.feature_cols_across,
-        })
-        
-        return {}
-    
-    def _step_compile_crowding(self) -> Dict[str, Path]:
-        """Step 4: Compile crowding metrics per drug/dose."""
-        step = "4_compile_crowding"
-        output_files = {}
-        
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Skipping (already complete)")
-            return {}
-        
-        self._log_step(step, "Compiling crowding metrics...")
-        start = time.time()
-        
-        # Per-genotype crowding
-        crowding_per_geno = self.crowding_analyzer.compile_crowding_by_drug_dose(
-            self.data_per_geno, "per_genotype"
-        )
-        
-        # Across-all crowding
-        crowding_across = self.crowding_analyzer.compile_crowding_by_drug_dose(
-            self.data_across_all, "across_all"
-        )
-        
-        # Combine
-        crowding_combined = pd.concat(
-            [crowding_per_geno, crowding_across],
-            ignore_index=True
-        )
-        
-        # Save
-        crowding_path = self.output_dir / "crowding" / "crowding_by_drug_dose.csv"
-        crowding_combined.to_csv(crowding_path, index=False)
-        output_files['crowding'] = crowding_path
-        
-        # Also save separate files
-        if not crowding_per_geno.empty:
-            path = self.output_dir / "crowding" / "crowding_per_genotype.csv"
-            crowding_per_geno.to_csv(path, index=False)
-            output_files['crowding_per_genotype'] = path
-        
-        if not crowding_across.empty:
-            path = self.output_dir / "crowding" / "crowding_across_all.csv"
-            crowding_across.to_csv(path, index=False)
-            output_files['crowding_across_all'] = path
-        
-        self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Saved: {crowding_path}")
-        
         self.checkpoint.mark_complete(step)
-        
         return output_files
-    
-    def _step_compile_qc(self) -> Dict[str, Path]:
-        """Step 5: Compile QC metrics per well."""
-        step = "5_compile_qc"
-        output_files = {}
-        
+
+    def _step_aggregate_wells(self) -> Dict[str, Path]:
+        """Step 3: Aggregate single-cell data to well-level profiles."""
+        step = "3_aggregate_wells"
+        output_files: Dict[str, Path] = {}
+
+        if self.resume and self.checkpoint.is_complete(step):
+            self._log_step(step, "Loading from checkpoint...")
+            cache_path = self.output_dir / "cache" / "profiles_raw.parquet"
+            if cache_path.exists():
+                self.well_profiles = pd.read_parquet(cache_path)
+                self.feature_cols = self.checkpoint.get_metadata(step).get("feature_cols", self.feature_cols)
+                return {}
+
+        self._log_step(step, "Aggregating to well-level profiles...")
+        start = time.time()
+
+        groupby_cols = [c for c in ['plate', 'well'] if c in self.raw_data.columns]
+        meta_cols = [c for c in ['genotype', 'drug', 'dilut_string', 'dilut_um',
+                                  'is_control', 'moa'] if c in self.raw_data.columns]
+        avail_feat = [c for c in self.feature_cols if c in self.raw_data.columns]
+
+        agg_dict = {col: 'median' for col in avail_feat}
+        for col in meta_cols:
+            agg_dict[col] = 'first'
+
+        profiles = self.raw_data.groupby(groupby_cols).agg(agg_dict).reset_index()
+        cell_counts = self.raw_data.groupby(groupby_cols).size().rename('cell_count')
+        profiles = profiles.merge(cell_counts.reset_index(), on=groupby_cols)
+
+        # Aggregate H2Ax foci and Ki67 at the well level
+        grouped = self.raw_data.groupby(groupby_cols)
+        if 'foci_count' in self.raw_data.columns:
+            profiles['foci_mean_per_cell'] = grouped['foci_count'].mean().values
+            profiles['foci_total'] = grouped['foci_count'].sum().values
+            profiles['cells_with_foci_fraction'] = grouped['foci_count'].apply(lambda x: (x > 0).mean()).values
+            profiles['high_damage_fraction'] = grouped['foci_count'].apply(lambda x: (x > 5).mean()).values
+        if 'ki67_positive' in self.raw_data.columns:
+            profiles['ki67_positive_fraction'] = grouped['ki67_positive'].mean().values
+
+        self.well_profiles = profiles
+        self.feature_cols = avail_feat
+
+        # Write cell QC by well
+        qc_by_well_path = self.output_dir / "tables" / "cell_qc_by_well.parquet"
+        cell_counts.reset_index().to_parquet(qc_by_well_path, index=False)
+        output_files['cell_qc_by_well'] = qc_by_well_path
+
+        # Write raw profiles
+        raw_path = self.output_dir / "tables" / "profiles_raw.parquet"
+        profiles.to_parquet(raw_path, index=False)
+        output_files['profiles_raw'] = raw_path
+
+        cache_dir = self.output_dir / "cache"
+        profiles.to_parquet(cache_dir / "profiles_raw.parquet", index=False)
+
+        self._log_step(step, f"Aggregated {len(profiles)} wells, {len(avail_feat)} features")
+        self._log_timing(step, time.time() - start)
+        self.checkpoint.mark_complete(step, {"feature_cols": self.feature_cols})
+        return output_files
+
+    def _step_well_qc(self) -> Dict[str, Path]:
+        """Step 4: Well QC — flag outlier wells and optionally remove them."""
+        step = "4_well_qc"
+        output_files: Dict[str, Path] = {}
+
         if self.resume and self.checkpoint.is_complete(step):
             self._log_step(step, "Skipping (already complete)")
+            cache_path = self.output_dir / "cache" / "profiles_qc.parquet"
+            if cache_path.exists():
+                self.well_profiles = pd.read_parquet(cache_path)
             return {}
-        
-        self._log_step(step, "Compiling QC metrics...")
+
+        self._log_step(step, "Running well QC...")
         start = time.time()
-        
-        groupby_cols = ['plate', 'well']
-        groupby_cols = [c for c in groupby_cols if c in self.raw_data.columns]
-        
+
+        # Compile well-level QC metrics from raw data
+        groupby_cols = [c for c in ['plate', 'well'] if c in self.raw_data.columns]
         qc_metrics = self.qc_compiler.compile_well_qc(self.raw_data, groupby_cols)
         qc_decisions = self.qc_compiler.apply_qc_rules(qc_metrics, self.qc_config)
         self.qc_well_table = qc_decisions
-        self.filtered_raw_data = self._filter_by_qc(self.raw_data)
 
-        # Save
-        qc_path = self.output_dir / "qc" / "well_qc_metrics.csv"
-        qc_decisions.to_csv(qc_path, index=False)
-        output_files['qc'] = qc_path
+        # Save QC flags
+        qc_path = self.output_dir / "tables" / "qc_flags.parquet"
+        qc_decisions.to_parquet(qc_path, index=False)
+        output_files['qc_flags'] = qc_path
 
-        if self.qc_well_table is not None:
-            excluded = self.qc_well_table[~self.qc_well_table['qc_pass']]
-            excluded_path = self.output_dir / "qc" / "excluded_wells.csv"
-            excluded.to_csv(excluded_path, index=False)
-            output_files['excluded_wells'] = excluded_path
-        
+        # Also write CSV for plotting
+        qc_csv = self.output_dir / "tables" / "well_qc_metrics.csv"
+        qc_decisions.to_csv(qc_csv, index=False)
+        output_files['well_qc_metrics'] = qc_csv
+
+        # Remove failed wells from profiles
+        n_before = len(self.well_profiles)
+        if 'qc_pass' in qc_decisions.columns:
+            pass_wells = qc_decisions[qc_decisions['qc_pass']][groupby_cols].drop_duplicates()
+            self.well_profiles = self.well_profiles.merge(pass_wells, on=groupby_cols, how='inner')
+
+            removed = qc_decisions[~qc_decisions['qc_pass']]
+            if not removed.empty:
+                rm_path = self.output_dir / "tables" / "qc_removed_wells.parquet"
+                removed.to_parquet(rm_path, index=False)
+                output_files['qc_removed_wells'] = rm_path
+
+                excluded_csv = self.output_dir / "tables" / "excluded_wells.csv"
+                removed.to_csv(excluded_csv, index=False)
+                output_files['excluded_wells'] = excluded_csv
+
+        n_after = len(self.well_profiles)
+        self._log_step(step, f"Kept {n_after}/{n_before} wells after QC")
+
+        cache_dir = self.output_dir / "cache"
+        self.well_profiles.to_parquet(cache_dir / "profiles_qc.parquet", index=False)
+
         self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Saved: {qc_path}")
-        
         self.checkpoint.mark_complete(step)
-        
+        return output_files
+
+    def _step_normalize(self) -> Dict[str, Path]:
+        """Step 5: Normalize well-level features (control-based or global)."""
+        step = "5_normalize"
+        output_files: Dict[str, Path] = {}
+
+        if self.resume and self.checkpoint.is_complete(step):
+            self._log_step(step, "Loading from checkpoint...")
+            cache_path = self.output_dir / "cache" / "profiles_norm.parquet"
+            if cache_path.exists():
+                self.well_profiles_norm = pd.read_parquet(cache_path)
+                return {}
+
+        self._log_step(step, f"Normalizing ({self.config.normalization})...")
+        start = time.time()
+
+        from dna_damage_parquet_pipeline import robust_zscore
+
+        df = self.well_profiles.copy()
+        avail_feat = [c for c in self.feature_cols if c in df.columns]
+
+        if self.config.normalization == "control_based" and 'is_control' in df.columns:
+            # Normalize relative to control medians per plate/genotype/drug
+            baseline_cols = [c for c in ['plate', 'genotype', 'drug'] if c in df.columns]
+            control = df[df['is_control']]
+            if not control.empty and baseline_cols:
+                ctrl_medians = control.groupby(baseline_cols)[avail_feat].median().reset_index()
+                ctrl_mads = control.groupby(baseline_cols)[avail_feat].apply(
+                    lambda x: np.nanmedian(np.abs(x - np.nanmedian(x, axis=0)), axis=0)
+                )
+                if isinstance(ctrl_mads, pd.DataFrame):
+                    ctrl_mads = ctrl_mads.reset_index()
+                else:
+                    ctrl_mads = None
+
+                merged = df.merge(
+                    ctrl_medians, on=baseline_cols, suffixes=('', '_ctrl_med'), how='left',
+                )
+                for feat in avail_feat:
+                    med_col = f"{feat}_ctrl_med"
+                    if med_col in merged.columns:
+                        merged[feat] = merged[feat] - merged[med_col]
+                        merged.drop(columns=[med_col], inplace=True)
+                df = merged
+            else:
+                # Fallback to global robust z-score
+                X = df[avail_feat].values.astype(np.float64)
+                df[avail_feat] = robust_zscore(X, axis=0)
+        else:
+            X = df[avail_feat].values.astype(np.float64)
+            df[avail_feat] = robust_zscore(X, axis=0)
+
+        # Replace inf with nan
+        for feat in avail_feat:
+            df[feat] = df[feat].replace([np.inf, -np.inf], np.nan)
+
+        self.well_profiles_norm = df
+
+        norm_path = self.output_dir / "tables" / "profiles_norm.parquet"
+        df.to_parquet(norm_path, index=False)
+        output_files['profiles_norm'] = norm_path
+
+        # Normalization diagnostics
+        diag = {
+            "method": self.config.normalization,
+            "n_features": len(avail_feat),
+            "n_wells": len(df),
+        }
+        diag_path = self.output_dir / "tables" / "normalization_diagnostics.json"
+        with open(diag_path, 'w') as f:
+            json.dump(diag, f, indent=2)
+        output_files['normalization_diagnostics'] = diag_path
+
+        cache_dir = self.output_dir / "cache"
+        df.to_parquet(cache_dir / "profiles_norm.parquet", index=False)
+
+        self._log_timing(step, time.time() - start)
+        self._log_step(step, f"Normalized {len(avail_feat)} features for {len(df)} wells")
+        self.checkpoint.mark_complete(step)
+        return output_files
+
+    def _step_crowding_correction(self) -> Dict[str, Path]:
+        """Step 6: Compute crowding-correlated feature exclusions."""
+        step = "6_crowding"
+        output_files: Dict[str, Path] = {}
+
+        if self.resume and self.checkpoint.is_complete(step):
+            self._log_step(step, "Skipping (already complete)")
+            self.crowding_excluded = self.checkpoint.get_metadata(step).get("excluded", [])
+            return {}
+
+        self._log_step(step, "Computing crowding exclusions...")
+        start = time.time()
+
+        profiles = self.well_profiles_norm if self.well_profiles_norm is not None else self.well_profiles
+        avail_feat = [c for c in self.feature_cols if c in profiles.columns]
+
+        corr_df, excluded = self.crowding_analyzer.compute_crowding_exclusions(
+            profiles, avail_feat, threshold=self.config.crowding_corr_threshold,
+        )
+        self.crowding_excluded = excluded
+
+        # Also compile crowding summary by drug/dose
+        crowding_summary = self.crowding_analyzer.compile_crowding_by_drug_dose(
+            self.raw_data, "all",
+        )
+
+        crowding_dir = self.output_dir / "crowding"
+        if not corr_df.empty:
+            corr_path = crowding_dir / "crowding_feature_correlations.csv"
+            corr_df.to_csv(corr_path, index=False)
+            output_files['crowding_feature_correlations'] = corr_path
+
+        excl_path = crowding_dir / "crowding_excluded_features.txt"
+        excl_path.write_text("\n".join(excluded))
+        output_files['crowding_excluded_features'] = excl_path
+
+        if not crowding_summary.empty:
+            cs_path = crowding_dir / "crowding_by_drug_dose.csv"
+            crowding_summary.to_csv(cs_path, index=False)
+            output_files['crowding_summary'] = cs_path
+
+        self._log_step(step, f"Excluded {len(excluded)}/{len(avail_feat)} crowding-correlated features")
+        self._log_timing(step, time.time() - start)
+        self.checkpoint.mark_complete(step, {"excluded": excluded})
         return output_files
     
-    def _step_generate_per_well(self) -> Dict[str, Path]:
-        """Step 6: Generate per-well aggregated CSVs."""
-        step = "6_generate_per_well"
-        output_files = {}
-        
+    # ------------------------------------------------------------------
+    # Variant runner (steps 7-8 per ANALYSIS_OVERVIEW sections 6.1-6.9)
+    # ------------------------------------------------------------------
+
+    def _run_variant(self, variant: str) -> Dict[str, Path]:
+        """Run all per-variant analyses (PCA, dose-response, etc.)."""
+        step = f"7_variant_{variant}"
+        output_files: Dict[str, Path] = {}
+
         if self.resume and self.checkpoint.is_complete(step):
             self._log_step(step, "Skipping (already complete)")
             return {}
-        
-        self._log_step(step, "Generating per-well CSVs...")
+
+        self._log_step(step, f"Running variant: {variant}")
         start = time.time()
-        
-        for mode, df, feature_cols in [
-            ("per_genotype", self.data_per_geno, self.feature_cols_per_geno),
-            ("across_all", self.data_across_all, self.feature_cols_across),
-        ]:
-            mode_dir = self.output_dir / "per_well" / mode
-            mode_dir.mkdir(parents=True, exist_ok=True)
 
-            df = self._filter_by_qc(df)
-
-            # Group by well and aggregate
-            groupby_cols = ['plate', 'well']
-            meta_cols = ['genotype', 'drug', 'dilut_string', 'dilut_um', 'is_control', 'moa']
-            
-            groupby_cols = [c for c in groupby_cols if c in df.columns]
-            meta_cols = [c for c in meta_cols if c in df.columns]
-            
-            if not groupby_cols:
-                continue
-            
-            # Aggregate features
-            agg_dict = {col: 'median' for col in feature_cols if col in df.columns}
-            for col in meta_cols:
-                agg_dict[col] = 'first'
-            
-            well_data = df.groupby(groupby_cols).agg(agg_dict).reset_index()
-            cell_counts = df.groupby(groupby_cols).size().rename('cell_count')
-            well_data = well_data.merge(cell_counts.reset_index(), on=groupby_cols)
-
-            baseline_cols = [c for c in ['plate', 'genotype', 'drug'] if c in well_data.columns]
-            effects = self._compute_control_relative_effects(
-                well_data,
-                feature_cols,
-                self.config.control_label,
-                baseline_cols,
-            )
-
-            # Save combined file
-            combined_path = mode_dir / f"well_profiles_{mode}.csv"
-            well_data.to_csv(combined_path, index=False)
-            output_files[f"well_profiles_{mode}"] = combined_path
-
-            effects_path = mode_dir / f"well_effects_{mode}.csv"
-            effects.to_csv(effects_path, index=False)
-            output_files[f"well_effects_{mode}"] = effects_path
-            self.well_profiles[mode] = well_data
-            self.well_effects[mode] = effects
-            
-            # Save per-genotype files
-            if 'genotype' in well_data.columns:
-                for geno in well_data['genotype'].unique():
-                    geno_data = well_data[well_data['genotype'] == geno]
-                    geno_safe = geno.replace("/", "_").replace("\\", "_")
-                    geno_path = mode_dir / f"well_profiles_{geno_safe}_{mode}.csv"
-                    geno_data.to_csv(geno_path, index=False)
-                    output_files[f"well_profiles_{geno_safe}_{mode}"] = geno_path
-
-                    geno_effects = effects[effects['genotype'] == geno]
-                    geno_effects_path = mode_dir / f"well_effects_{geno_safe}_{mode}.csv"
-                    geno_effects.to_csv(geno_effects_path, index=False)
-                    output_files[f"well_effects_{geno_safe}_{mode}"] = geno_effects_path
-            
-            self._log_step(step, f"Saved {mode} well profiles: {len(well_data)} wells")
-        
-        self._log_timing(step, time.time() - start)
-        
-        self.checkpoint.mark_complete(step)
-        
-        return output_files
-    
-    def _step_compute_pca(self) -> Dict[str, Path]:
-        """Step 7: Compute PCA on aggregated profiles."""
-        step = "7_compute_pca"
-        output_files = {}
-        
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Skipping (already complete)")
-            return {}
-        
-        self._log_step(step, "Computing PCA...")
-        start = time.time()
-        
-        from sklearn.decomposition import PCA
+        from sklearn.decomposition import PCA as PCAModel
         from sklearn.preprocessing import StandardScaler
-        
-        for mode, df, feature_cols in [
-            ("per_genotype", self.data_per_geno, self.feature_cols_per_geno),
-            ("across_all", self.data_across_all, self.feature_cols_across),
-        ]:
-            pca_dir = self.output_dir / "pca" / mode
-            pca_dir.mkdir(parents=True, exist_ok=True)
+        from scipy.spatial.distance import pdist, squareform
 
-            df = self._filter_by_qc(df)
-            
-            # Select features
-            selected_features = self.feature_selector.select_features(df, feature_cols)
-            
-            if len(selected_features) < 2:
-                self._log_step(step, f"Warning: Insufficient features for PCA ({mode})")
-                continue
-            
-            # Aggregate to well level
-            groupby_cols = ['plate', 'well']
-            meta_cols = ['genotype', 'drug', 'dilut_string', 'dilut_um', 'is_control', 'moa']
-            
-            groupby_cols = [c for c in groupby_cols if c in df.columns]
-            meta_cols = [c for c in meta_cols if c in df.columns]
-            
-            if not groupby_cols:
-                continue
-            
-            agg_dict = {col: 'median' for col in selected_features}
-            for col in meta_cols:
-                agg_dict[col] = 'first'
-            
-            profiles = df.groupby(groupby_cols).agg(agg_dict).reset_index()
-            cell_counts = df.groupby(groupby_cols).size().rename('cell_count')
-            profiles = profiles.merge(cell_counts.reset_index(), on=groupby_cols)
-            
-            # Compute PCA
-            X = profiles[selected_features].fillna(0).values
-            
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            n_components = min(10, len(selected_features), len(profiles) - 1)
-            if n_components < 2:
-                n_components = 2
-            
-            pca = PCA(n_components=n_components, random_state=42)
-            pcs = pca.fit_transform(X_scaled)
-            
-            for i in range(n_components):
-                profiles[f'PC{i+1}'] = pcs[:, i]
-            
-            # Save profiles with PCA
-            profiles_path = pca_dir / f"profiles_pca_{mode}.csv"
-            profiles.to_csv(profiles_path, index=False)
-            output_files[f"profiles_pca_{mode}"] = profiles_path
-            
-            # Save PCA loadings
-            loadings = pd.DataFrame(
-                pca.components_.T,
-                columns=[f'PC{i+1}' for i in range(n_components)],
-                index=selected_features
-            )
-            loadings_path = pca_dir / f"pca_loadings_{mode}.csv"
-            loadings.to_csv(loadings_path)
-            output_files[f"pca_loadings_{mode}"] = loadings_path
-            
-            # Save variance explained
-            var_explained = pd.DataFrame({
-                'PC': [f'PC{i+1}' for i in range(n_components)],
-                'variance_explained': pca.explained_variance_,
-                'variance_ratio': pca.explained_variance_ratio_,
-                'cumulative_variance_ratio': np.cumsum(pca.explained_variance_ratio_),
-            })
-            var_path = pca_dir / f"pca_variance_{mode}.csv"
-            var_explained.to_csv(var_path, index=False)
-            output_files[f"pca_variance_{mode}"] = var_path
-            
-            self._log_step(step, f"{mode}: {len(selected_features)} features, "
-                          f"PC1={pca.explained_variance_ratio_[0]*100:.1f}%, "
-                          f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
-        
-        self._log_timing(step, time.time() - start)
-        
-        self.checkpoint.mark_complete(step)
-        
-        return output_files
-    
-    def _step_dose_response_analysis(self) -> Dict[str, Path]:
-        """Step 8: Perform dose-response analysis."""
-        step = "8_dose_response"
-        output_files = {}
-        
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Skipping (already complete)")
-            return {}
-        
-        self._log_step(step, "Performing dose-response analysis...")
-        start = time.time()
-        
-        dr_dir = self.output_dir / "dose_response"
-        
-        effects_df = self.well_effects.get("per_genotype")
-        if effects_df is None or effects_df.empty:
-            effects_path = self.output_dir / "per_well" / "per_genotype" / "well_effects_per_genotype.csv"
-            if effects_path.exists():
-                effects_df = pd.read_csv(effects_path)
-
-        analysis_df = effects_df if effects_df is not None and not effects_df.empty else self.filtered_raw_data
-        if analysis_df is None or analysis_df.empty:
-            analysis_df = self.raw_data
-
-        response_cols = [
-            'foci_count', 'foci_mean_per_cell', 'ki67_positive',
-            'gamma_h2ax_mean_intensity', 'area', 'dapi_mean_intensity'
-        ]
-        available_cols = analysis_df.columns.tolist()
-        response_cols = [c for c in response_cols if c in available_cols]
-        effect_response_cols = []
-        for col in response_cols:
-            delta_col = f"{col}_delta"
-            effect_response_cols.append(delta_col if delta_col in available_cols else col)
-        
-        if not response_cols:
-            self._log_step(step, "Warning: No response columns found for dose-response analysis")
+        profiles = self.well_profiles_norm if self.well_profiles_norm is not None else self.well_profiles
+        if profiles is None or profiles.empty:
+            self._log_step(step, "No profiles available — skipping variant")
             self.checkpoint.mark_complete(step)
             return output_files
-        
-        # Fit dose-response curves per genotype/drug
+
+        profiles = profiles.copy()
+        avail_feat = [c for c in self.feature_cols if c in profiles.columns]
+
+        # Apply crowding correction for the corrected variant
+        if variant == "crowding_corrected" and self.crowding_excluded:
+            avail_feat = [c for c in avail_feat if c not in self.crowding_excluded]
+            self._log_step(step, f"Using {len(avail_feat)} features (excluded {len(self.crowding_excluded)} crowding-correlated)")
+        else:
+            self._log_step(step, f"Using {len(avail_feat)} features (uncorrected)")
+
+        if len(avail_feat) < 2:
+            self._log_step(step, "Too few features for analysis — skipping variant")
+            self.checkpoint.mark_complete(step)
+            return output_files
+
+        var_dir = self.output_dir / variant
+        tables_dir = var_dir / "tables"
+        models_dir = var_dir / "models"
+        seed = self.config.random_seed
+
+        # --- Derived features ------------------------------------------------
+        if 'dilut_um' in profiles.columns and 'is_control' in profiles.columns:
+            baseline_cols = [c for c in ['plate', 'genotype', 'drug'] if c in profiles.columns]
+            profiles = self._compute_control_relative_effects(
+                profiles, avail_feat, self.config.control_label, baseline_cols,
+            )
+
+            # Phenotype magnitude = L2 norm of delta vector
+            delta_cols = [f"{c}_delta" for c in avail_feat if f"{c}_delta" in profiles.columns]
+            if delta_cols:
+                profiles['phenotype_magnitude'] = np.sqrt(
+                    (profiles[delta_cols].fillna(0) ** 2).sum(axis=1)
+                )
+                profiles['phenotype_angle_to_control'] = profiles['phenotype_magnitude'].apply(
+                    lambda x: np.degrees(np.arccos(np.clip(1 / (1 + x), -1, 1)))
+                )
+
+        delta_path = tables_dir / "profiles_delta.parquet"
+        profiles.to_parquet(delta_path, index=False)
+        output_files[f'{variant}/profiles_delta'] = delta_path
+
+        # --- Feature selection -----------------------------------------------
+        selected = self.feature_selector.select_features(profiles, avail_feat)
+        if len(selected) < 2:
+            self._log_step(step, "Too few features after selection — skipping PCA")
+            self.checkpoint.mark_complete(step)
+            return output_files
+
+        # --- PCA embedding + loadings ----------------------------------------
+        X = profiles[selected].fillna(0).values
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        n_comp = min(self.config.pca_components, len(selected), len(profiles) - 1)
+        n_comp = max(n_comp, 2)
+
+        pca = PCAModel(n_components=n_comp, random_state=seed)
+        pcs = pca.fit_transform(X_scaled)
+        for i in range(n_comp):
+            profiles[f'PC{i+1}'] = pcs[:, i]
+
+        # Save PCA profiles CSV (for plotting)
+        pca_csv = var_dir / "plots" / "embedding" / f"profiles_pca_{variant}.csv"
+        profiles.to_csv(pca_csv, index=False)
+        output_files[f'{variant}/profiles_pca'] = pca_csv
+
+        loadings = pd.DataFrame(
+            pca.components_.T,
+            columns=[f'PC{i+1}' for i in range(n_comp)],
+            index=selected,
+        )
+        loadings_csv = var_dir / "plots" / "embedding" / f"pca_loadings_{variant}.csv"
+        loadings.to_csv(loadings_csv)
+        output_files[f'{variant}/pca_loadings'] = loadings_csv
+
+        var_exp = pd.DataFrame({
+            'PC': [f'PC{i+1}' for i in range(n_comp)],
+            'variance_explained': pca.explained_variance_,
+            'variance_ratio': pca.explained_variance_ratio_,
+            'cumulative_variance_ratio': np.cumsum(pca.explained_variance_ratio_),
+        })
+        var_csv = var_dir / "plots" / "embedding" / f"pca_variance_{variant}.csv"
+        var_exp.to_csv(var_csv, index=False)
+        output_files[f'{variant}/pca_variance'] = var_csv
+
+        pca_info = {
+            'n_components': n_comp,
+            'n_features': len(selected),
+            'explained_variance_ratio': pca.explained_variance_ratio_.tolist(),
+            'variant': variant,
+        }
+        pca_info_path = models_dir / "pca_info.json"
+        with open(pca_info_path, 'w') as f:
+            json.dump(pca_info, f, indent=2)
+        output_files[f'{variant}/pca_info'] = pca_info_path
+
+        self._log_step(step, f"PCA: {len(selected)} features, "
+                       f"PC1={pca.explained_variance_ratio_[0]*100:.1f}%, "
+                       f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
+
+        # --- Per-channel PCA -------------------------------------------------
+        channel_prefixes = set()
+        for feat in selected:
+            parts = feat.rsplit('_', 1)
+            if len(parts) == 2:
+                channel_prefixes.add(parts[0])
+
+        for prefix in sorted(channel_prefixes):
+            ch_feats = [f for f in selected if f.startswith(prefix + '_') or f == prefix]
+            if len(ch_feats) < 2:
+                continue
+            ch_X = profiles[ch_feats].fillna(0).values
+            ch_scaled = StandardScaler().fit_transform(ch_X)
+            n_ch = min(3, len(ch_feats), len(profiles) - 1)
+            if n_ch < 2:
+                continue
+            ch_pca = PCAModel(n_components=n_ch, random_state=seed)
+            ch_pca.fit(ch_scaled)
+            ch_dir = var_dir / "plots" / "per_channel" / prefix
+            ch_dir.mkdir(parents=True, exist_ok=True)
+            ch_info = {
+                'channel': prefix, 'n_features': len(ch_feats),
+                'explained_variance_ratio': ch_pca.explained_variance_ratio_.tolist(),
+            }
+            with open(ch_dir / "pca_info.json", 'w') as f:
+                json.dump(ch_info, f, indent=2)
+
+        # --- Global distance heatmap -----------------------------------------
+        label_cols = [c for c in ['genotype', 'drug', 'dilut_string'] if c in profiles.columns]
+        if label_cols:
+            profiles['_sample_label'] = profiles[label_cols].astype(str).agg(' | '.join, axis=1)
+            label_means = profiles.groupby('_sample_label')[selected].mean()
+            if len(label_means) >= 2:
+                dist = squareform(pdist(label_means.values, metric='correlation'))
+                dist_df = pd.DataFrame(dist, index=label_means.index, columns=label_means.index)
+                dist_csv = var_dir / "plots" / "clustering" / f"distance_heatmap_{variant}.csv"
+                dist_df.to_csv(dist_csv)
+                output_files[f'{variant}/distance_heatmap'] = dist_csv
+            profiles.drop(columns=['_sample_label'], inplace=True)
+
+        # --- EC50-focused PCA ------------------------------------------------
+        ec50_rows = pd.DataFrame()
+        for geno_name, geno_cfg in self.config.genotypes.items():
+            for drug_name, drug_cfg in geno_cfg.drugs.items():
+                if drug_cfg.ec50_um is not None:
+                    mask = (
+                        (profiles.get('genotype') == geno_name) &
+                        (profiles.get('drug') == drug_name) &
+                        (profiles.get('dilut_um', pd.Series(dtype=float)).between(
+                            drug_cfg.ec50_um * 0.5, drug_cfg.ec50_um * 2.0))
+                    )
+                    ec50_rows = pd.concat([ec50_rows, profiles[mask]])
+
+        if len(ec50_rows) >= 3 and len(selected) >= 2:
+            ec50_dir = var_dir / "plots" / "ec50_focused"
+            ec50_csv = ec50_dir / f"ec50_profiles_{variant}.csv"
+            ec50_rows.to_csv(ec50_csv, index=False)
+            output_files[f'{variant}/ec50_profiles'] = ec50_csv
+
+        # --- DMSO/control-only PCA -------------------------------------------
+        if 'is_control' in profiles.columns:
+            ctrl = profiles[profiles['is_control']]
+            if len(ctrl) >= 3:
+                ctrl_dir = var_dir / "plots" / "dmso_controls"
+                ctrl_csv = ctrl_dir / f"dmso_profiles_{variant}.csv"
+                ctrl.to_csv(ctrl_csv, index=False)
+                output_files[f'{variant}/dmso_profiles'] = ctrl_csv
+
+                summary_info = {'n_control_wells': len(ctrl)}
+                with open(ctrl_dir / "selection_summary.json", 'w') as f:
+                    json.dump(summary_info, f, indent=2)
+
+        # --- Per-drug PCA ----------------------------------------------------
+        if 'drug' in profiles.columns:
+            for drug, drug_df in profiles.groupby('drug'):
+                if len(drug_df) < 3:
+                    continue
+                drug_safe = str(drug).replace("/", "_").replace("\\", "_")
+                drug_dir = var_dir / "plots" / "per_drug"
+                drug_csv = drug_dir / f"profiles_{drug_safe}_{variant}.csv"
+                drug_df.to_csv(drug_csv, index=False)
+                output_files[f'{variant}/per_drug_{drug_safe}'] = drug_csv
+
+        # --- Dose-response modeling ------------------------------------------
+        output_files.update(self._variant_dose_response(profiles, avail_feat, variant))
+
+        self._log_timing(step, time.time() - start)
+        self.checkpoint.mark_complete(step)
+        return output_files
+
+    def _variant_dose_response(
+        self,
+        profiles: pd.DataFrame,
+        feature_cols: List[str],
+        variant: str,
+    ) -> Dict[str, Path]:
+        """Dose-response fitting within a variant (H2Ax foci + Ki67 included)."""
+        output_files: Dict[str, Path] = {}
+        var_dir = self.output_dir / variant
+        tables_dir = var_dir / "tables"
+        models_dir = var_dir / "models"
+        dr_plot_dir = var_dir / "plots" / "dose_response"
+
+        # Build response columns — include H2Ax foci and Ki67 metrics
+        response_candidates = [
+            'foci_count', 'foci_mean_per_cell', 'ki67_positive', 'ki67_positive_fraction',
+            'gamma_h2ax_mean_intensity', 'area', 'dapi_mean_intensity',
+            'phenotype_magnitude',
+        ]
+        available = profiles.columns.tolist()
+        response_cols = [c for c in response_candidates if c in available]
+
+        # Also include delta versions
+        effect_cols = []
+        for col in response_cols:
+            delta = f"{col}_delta"
+            effect_cols.append(delta if delta in available else col)
+        effect_cols = list(dict.fromkeys(effect_cols))  # dedupe
+
+        if not effect_cols:
+            return output_files
+
+        # Fit dose-response curves
         all_fits = []
-        for col in effect_response_cols:
+        for col in effect_cols:
             try:
                 fits = self.dose_response_analyzer.fit_drug_response(
-                    analysis_df,
-                    col,
-                    groupby=['genotype', 'drug'],
-                    weight_column='cell_count' if 'cell_count' in analysis_df.columns else None,
+                    profiles, col, groupby=['genotype', 'drug'],
+                    weight_column='cell_count' if 'cell_count' in profiles.columns else None,
                 )
                 if not fits.empty:
                     all_fits.append(fits)
             except Exception as e:
-                self._log_step(step, f"Warning: Could not fit {col}: {e}")
-        
+                self._log_step(f"dose_response_{variant}", f"Warning: {col}: {e}")
+
         if all_fits:
             fits_df = pd.concat(all_fits, ignore_index=True)
-            fits_path = dr_dir / "dose_response_fits.csv"
-            fits_df.to_csv(fits_path, index=False)
-            output_files['dose_response_fits'] = fits_path
-            self._log_step(step, f"Saved dose-response fits: {fits_path}")
-        
+            fits_csv = dr_plot_dir / "dose_response_fits.csv"
+            fits_df.to_csv(fits_csv, index=False)
+            output_files[f'{variant}/dose_response_fits'] = fits_csv
+
+            fits_json = models_dir / "dose_response_fits.json"
+            fits_df.to_json(fits_json, orient='records', indent=2)
+            output_files[f'{variant}/dose_response_fits_json'] = fits_json
+
+        # Dose-response metrics per feature
+        per_feat_fits = []
+        for feat in feature_cols[:20]:  # cap to avoid very long runs
+            delta = f"{feat}_delta"
+            col = delta if delta in available else feat
+            if col not in available:
+                continue
+            try:
+                fits = self.dose_response_analyzer.fit_drug_response(
+                    profiles, col, groupby=['genotype', 'drug'],
+                )
+                if not fits.empty:
+                    per_feat_fits.append(fits)
+            except Exception:
+                continue
+        if per_feat_fits:
+            pf_df = pd.concat(per_feat_fits, ignore_index=True)
+            pf_path = tables_dir / "per_feature_dose_response_metrics.parquet"
+            pf_df.to_parquet(pf_path, index=False)
+            output_files[f'{variant}/per_feature_dr'] = pf_path
+
         # Summary statistics by dose
         summary = self.response_summarizer.summarize_by_dose(
-            analysis_df,
-            effect_response_cols,
-            groupby=['genotype', 'drug']
+            profiles, effect_cols, groupby=['genotype', 'drug'],
         )
         if not summary.empty:
-            summary_path = dr_dir / "dose_response_summary.csv"
-            summary.to_csv(summary_path, index=False)
-            output_files['dose_response_summary'] = summary_path
-        
+            sm_path = dr_plot_dir / "dose_response_summary.csv"
+            summary.to_csv(sm_path, index=False)
+            output_files[f'{variant}/dose_response_summary'] = sm_path
+
         # Fold-change vs control
-        fold_change = self.response_summarizer.compute_fold_change_vs_control(
-            analysis_df,
-            effect_response_cols,
-            groupby=['genotype', 'drug'],
-            baseline_cols=['plate']
+        fc = self.response_summarizer.compute_fold_change_vs_control(
+            profiles, effect_cols, groupby=['genotype', 'drug'], baseline_cols=['plate'],
         )
-        if not fold_change.empty:
-            fc_path = dr_dir / "fold_change_vs_control.csv"
-            fold_change.to_csv(fc_path, index=False)
-            output_files['fold_change'] = fc_path
-        
-        self._log_timing(step, time.time() - start)
-        
-        self.checkpoint.mark_complete(step)
-        
-        return output_files
-    
-    def _step_statistical_comparisons(self) -> Dict[str, Path]:
-        """Step 10: Perform statistical comparisons between genotypes."""
-        step = "10_statistics"
-        output_files = {}
-        
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Skipping (already complete)")
-            return {}
-        
-        self._log_step(step, "Performing statistical comparisons...")
-        start = time.time()
-        
-        stats_dir = self.output_dir / "statistics"
-        
-        effects_df = self.well_effects.get("per_genotype")
-        if effects_df is None or effects_df.empty:
-            effects_path = self.output_dir / "per_well" / "per_genotype" / "well_effects_per_genotype.csv"
-            if effects_path.exists():
-                effects_df = pd.read_csv(effects_path)
+        if not fc.empty:
+            fc_path = dr_plot_dir / "fold_change_vs_control.csv"
+            fc.to_csv(fc_path, index=False)
+            output_files[f'{variant}/fold_change'] = fc_path
 
-        analysis_df = effects_df if effects_df is not None and not effects_df.empty else self.filtered_raw_data
-        if analysis_df is None or analysis_df.empty:
-            analysis_df = self.raw_data
-
-        response_cols = ['foci_count', 'ki67_positive', 'area']
-        available_cols = analysis_df.columns.tolist()
-        response_cols = [c for c in response_cols if c in available_cols]
-        effect_response_cols = []
-        for col in response_cols:
-            delta_col = f"{col}_delta"
-            effect_response_cols.append(delta_col if delta_col in available_cols else col)
-
-        for col in effect_response_cols:
-            ec50_boot = self.statistical_comparator.compare_ec50s_bootstrap(
-                analysis_df,
-                col,
-                dose_col='dilut_um',
-                groupby='genotype',
-                drug_col='drug',
-                weight_col='cell_count' if 'cell_count' in analysis_df.columns else None,
-            )
-
-            if not ec50_boot.empty:
-                ec50_path = stats_dir / f"ec50_bootstrap_{col}.csv"
-                ec50_boot.to_csv(ec50_path, index=False)
-                output_files[f'ec50_bootstrap_{col}'] = ec50_path
-                self._log_step(step, f"Saved EC50 bootstrap comparisons: {ec50_path}")
-        
-        # Compare responses at each dose
-        for col in effect_response_cols:
+        # Bootstrap EC50 comparisons
+        for col in effect_cols[:5]:
             try:
-                comparisons = self.statistical_comparator.compare_responses_at_dose(
-                    analysis_df,
-                    col,
-                    dose_col='dilut_um',
-                    groupby='genotype',
-                    drug_col='drug'
+                ec50_boot = self.statistical_comparator.compare_ec50s_bootstrap(
+                    profiles, col, dose_col='dilut_um', groupby='genotype', drug_col='drug',
+                    weight_col='cell_count' if 'cell_count' in profiles.columns else None,
+                    n_boot=200,
                 )
-                
-                if not comparisons.empty:
-                    comp_path = stats_dir / f"genotype_comparison_{col}.csv"
-                    comparisons.to_csv(comp_path, index=False)
-                    output_files[f'genotype_comparison_{col}'] = comp_path
-            except Exception as e:
-                self._log_step(step, f"Warning: Could not compare {col}: {e}")
-        
-        self._log_timing(step, time.time() - start)
-        
-        self.checkpoint.mark_complete(step)
-        
+                if not ec50_boot.empty:
+                    bp = tables_dir / f"ec50_bootstrap_{col}.csv"
+                    ec50_boot.to_csv(bp, index=False)
+                    output_files[f'{variant}/ec50_bootstrap_{col}'] = bp
+            except Exception:
+                continue
+
+        # Genotype response comparisons
+        for col in effect_cols[:5]:
+            try:
+                comp = self.statistical_comparator.compare_responses_at_dose(
+                    profiles, col, dose_col='dilut_um', groupby='genotype', drug_col='drug',
+                )
+                if not comp.empty:
+                    cp = tables_dir / f"genotype_comparison_{col}.csv"
+                    comp.to_csv(cp, index=False)
+                    output_files[f'{variant}/genotype_comparison_{col}'] = cp
+            except Exception:
+                continue
+
         return output_files
+
+    # ------------------------------------------------------------------
+    # Plotting
+    # ------------------------------------------------------------------
 
     def _step_generate_plots(self, output_files: Dict[str, Path]) -> Dict[str, Path]:
-        """Step 9: Generate plots from CSV outputs."""
-        step = "9_generate_plots"
+        """Generate plots from CSV outputs."""
+        step = "8_generate_plots"
         plot_files: Dict[str, Path] = {}
 
         existing_plot_count = len(list((self.output_dir / "plots").rglob("*.png")))
@@ -962,53 +1093,6 @@ class DNADamageProductionPipeline:
         self.checkpoint.mark_complete(step)
 
         return plot_files
-
-    def _step_generate_statistics_plots(self, output_files: Dict[str, Path]) -> Dict[str, Path]:
-        """Step 11: Generate plots for statistics CSVs produced after the main plotting pass."""
-        step = "11_generate_statistics_plots"
-        plot_files: Dict[str, Path] = {}
-
-        if self.resume and self.checkpoint.is_complete(step):
-            self._log_step(step, "Skipping (already complete)")
-            return plot_files
-
-        stats_csvs = [
-            Path(p) for k, p in output_files.items()
-            if str(p).endswith(".csv") and (
-                k.startswith("ec50_bootstrap_") or k.startswith("genotype_comparison_")
-            )
-        ]
-        if not stats_csvs:
-            self.checkpoint.mark_complete(step)
-            return plot_files
-
-        self._log_step(step, f"Generating plots for {len(stats_csvs)} statistics CSVs...")
-        start = time.time()
-
-        plotter = PlotGenerator(self.output_dir, logger=self.logger)
-        results = plotter.generate_plots(stats_csvs)
-        for result in results:
-            for plot_path in result.plot_paths:
-                key = f"plot::{result.csv_path.stem}::{plot_path.name}"
-                plot_files[key] = plot_path
-
-        self._log_timing(step, time.time() - start)
-        self._log_step(step, f"Generated {len(plot_files)} statistics plots")
-        self.checkpoint.mark_complete(step)
-
-        return plot_files
-
-    def _filter_by_qc(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Filter a dataframe to wells passing QC."""
-        if self.qc_well_table is None or self.qc_well_table.empty:
-            return df
-        if 'qc_pass' not in self.qc_well_table.columns:
-            return df
-        key_cols = [c for c in ['plate', 'well'] if c in df.columns and c in self.qc_well_table.columns]
-        if not key_cols:
-            return df
-        pass_wells = self.qc_well_table[self.qc_well_table['qc_pass']][key_cols].drop_duplicates()
-        return df.merge(pass_wells, on=key_cols, how='inner')
 
     @staticmethod
     def _compute_control_relative_effects(
@@ -1069,21 +1153,24 @@ class DNADamageProductionPipeline:
         manifest = {
             "experiment_name": self.config.experiment_name,
             "analysis_date": datetime.now().isoformat(),
-            "pipeline_version": "1.0.0",
+            "pipeline_version": "2.0.0",
             "configuration": {
                 "config_file": str(self.config_path),
                 "genotypes": list(self.config.genotypes.keys()),
                 "control_label": self.config.control_label,
                 "dilut_column": self.config.dilut_column,
+                "normalization": self.config.normalization,
+                "crowding_corr_threshold": self.config.crowding_corr_threshold,
+                "pca_components": self.config.pca_components,
+                "random_seed": self.config.random_seed,
                 "n_workers": self.n_workers,
                 "qc": self.qc_config.__dict__ if self.qc_config else None,
             },
             "data_summary": {
                 "total_cells": len(self.raw_data) if self.raw_data is not None else 0,
-                "total_cells_after_qc": (
-                    len(self.filtered_raw_data)
-                    if self.filtered_raw_data is not None else 0
-                ),
+                "n_wells": len(self.well_profiles) if self.well_profiles is not None else 0,
+                "n_features": len(self.feature_cols),
+                "n_crowding_excluded": len(self.crowding_excluded),
                 "genotypes": (
                     self.raw_data['genotype'].unique().tolist()
                     if self.raw_data is not None and 'genotype' in self.raw_data.columns
@@ -1095,21 +1182,18 @@ class DNADamageProductionPipeline:
                     else []
                 ),
             },
-            "feature_counts": {
-                "per_genotype": len(self.feature_cols_per_geno),
-                "across_all": len(self.feature_cols_across),
-            },
+            "variants": ["uncorrected", "crowding_corrected"],
             "timing": self.timing,
             "output_files": {
                 k: str(v) if isinstance(v, Path) else v
                 for k, v in output_files.items()
             },
         }
-        
+
         manifest_path = self.output_dir / "manifest.json"
         with open(manifest_path, 'w') as f:
             json.dump(manifest, f, indent=2)
-        
+
         self._log_step("manifest", f"Saved: {manifest_path}")
 
 
