@@ -86,13 +86,17 @@ class ExperimentConfig:
     output_dir: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     qc: Optional["QCConfig"] = None
+    normalization: str = "control_based"
+    crowding_corr_threshold: float = 0.5
+    pca_components: int = 10
+    random_seed: int = 42
 
     @classmethod
     def from_json(cls, json_path: Union[str, Path]) -> "ExperimentConfig":
         """Load configuration from JSON file."""
         with open(json_path, 'r') as f:
             data = json.load(f)
-        
+
         metadata = data.get("metadata", {})
         experiment_name = metadata.get("experiment_name", "DNA_Damage_Analysis")
         control_label = metadata.get("control_label", "DMSO")
@@ -100,7 +104,7 @@ class ExperimentConfig:
         output_dir = metadata.get("output_dir", None)
         qc_data = data.get("qc", metadata.get("qc", {}))
         qc_config = QCConfig.from_dict(qc_data) if qc_data else None
-        
+
         genotypes = {}
         for geno_name, geno_data in data.get("genotypes", {}).items():
             drugs = {}
@@ -113,7 +117,7 @@ class ExperimentConfig:
                     dilution_factor=drug_data.get("dilution_factor", 3.0),
                 )
             genotypes[geno_name] = GenotypeConfig(drugs=drugs)
-        
+
         return cls(
             experiment_name=experiment_name,
             genotypes=genotypes,
@@ -122,6 +126,10 @@ class ExperimentConfig:
             output_dir=output_dir,
             metadata=metadata,
             qc=qc_config,
+            normalization=metadata.get("normalization", "control_based"),
+            crowding_corr_threshold=metadata.get("crowding_corr_threshold", 0.5),
+            pca_components=metadata.get("pca_components", 10),
+            random_seed=metadata.get("random_seed", 42),
         )
 
 
@@ -702,8 +710,73 @@ class CrowdingAnalyzer:
         if dilut_col in summary.columns:
             summary['dilut_um'] = summary[dilut_col].apply(parse_dilution_string)
             summary['is_control'] = summary[dilut_col].str.upper() == self.control_label.upper()
-        
+
         return summary
+
+    def compute_crowding_exclusions(
+        self,
+        profiles: pd.DataFrame,
+        feature_cols: List[str],
+        threshold: float = 0.5,
+    ) -> Tuple[pd.DataFrame, List[str]]:
+        """Identify features highly correlated with a crowding proxy.
+
+        Computes a per-well crowding proxy from available crowding columns
+        (falls back to ``cell_count``), then returns a correlation table and
+        the list of features exceeding ``|corr| > threshold``.
+
+        Parameters
+        ----------
+        profiles : pd.DataFrame
+            Well-level profiles containing feature columns and optionally
+            crowding columns (``crowding_local_mean``, ``crowding_density``,
+            ``crowding_sigma50``, ``crowding``, ``cell_count``).
+        feature_cols : list[str]
+            Feature columns to evaluate.
+        threshold : float
+            Absolute correlation above which a feature is excluded.
+
+        Returns
+        -------
+        corr_df : pd.DataFrame
+            Per-feature correlation with the crowding proxy.
+        excluded : list[str]
+            Feature names exceeding the threshold.
+        """
+        proxy_candidates = [
+            'crowding_local_mean', 'crowding_density',
+            'crowding_sigma50', 'crowding', 'cell_count',
+        ]
+        proxy_col = None
+        for c in proxy_candidates:
+            if c in profiles.columns and profiles[c].notna().sum() > 2:
+                proxy_col = c
+                break
+
+        if proxy_col is None:
+            empty = pd.DataFrame(columns=['feature', 'crowding_corr'])
+            return empty, []
+
+        proxy = profiles[proxy_col].astype(float)
+        records = []
+        for feat in feature_cols:
+            if feat not in profiles.columns:
+                continue
+            vals = profiles[feat].astype(float)
+            mask = vals.notna() & proxy.notna()
+            if mask.sum() < 3:
+                continue
+            corr = vals[mask].corr(proxy[mask])
+            records.append({'feature': feat, 'crowding_corr': corr})
+
+        corr_df = pd.DataFrame(records)
+        if corr_df.empty:
+            return corr_df, []
+
+        excluded = corr_df.loc[
+            corr_df['crowding_corr'].abs() > threshold, 'feature'
+        ].tolist()
+        return corr_df, excluded
 
 
 # =============================================================================
@@ -992,464 +1065,3 @@ class FeatureSelector:
         return selected
 
 
-# =============================================================================
-# MAIN ANALYSIS PIPELINE
-# =============================================================================
-
-class DNADamageAnalysisPipeline:
-    """
-    Main analysis pipeline for DNA damage panel parquet files.
-    
-    Outputs:
-      - Normalized single-cell data (per-genotype and across-all)
-      - Well-level aggregated profiles
-      - Crowding metrics per drug/dose
-      - QC metrics per well
-      - PCA coordinates
-    """
-    
-    def __init__(
-        self,
-        config: ExperimentConfig,
-        output_dir: Optional[Union[str, Path]] = None,
-    ):
-        self.config = config
-        self.output_dir = Path(output_dir or config.output_dir or "./dna_damage_output")
-        
-        # Initialize components
-        self.loader = DNADamageDataLoader(config)
-        self.preprocessor_per_geno = DNADamagePreprocessor(
-            norm_method="robust_zscore",
-            batch_col="plate",
-        )
-        self.preprocessor_across = DNADamagePreprocessor(
-            norm_method="robust_zscore",
-            batch_col="plate",
-        )
-        self.crowding_analyzer = CrowdingAnalyzer(
-            dilut_column=config.dilut_column,
-            control_label=config.control_label,
-        )
-        self.qc_compiler = QCMetricsCompiler()
-        self.feature_selector = FeatureSelector()
-        
-        # Storage for results
-        self.raw_data: Optional[pd.DataFrame] = None
-        self.data_per_geno: Optional[pd.DataFrame] = None
-        self.data_across_all: Optional[pd.DataFrame] = None
-        self.feature_cols_per_geno: List[str] = []
-        self.feature_cols_across: List[str] = []
-    
-    def _setup_output_dirs(self):
-        """Create output directory structure."""
-        dirs = [
-            self.output_dir,
-            self.output_dir / "per_genotype",
-            self.output_dir / "across_all",
-            self.output_dir / "crowding",
-            self.output_dir / "qc",
-            self.output_dir / "per_well",
-            self.output_dir / "pca",
-        ]
-        for d in dirs:
-            d.mkdir(parents=True, exist_ok=True)
-    
-    def run(self) -> Dict[str, Path]:
-        """
-        Run the complete analysis pipeline.
-        
-        Returns
-        -------
-        dict
-            Dictionary mapping output names to file paths
-        """
-        print(f"Starting DNA Damage Analysis Pipeline")
-        print(f"Experiment: {self.config.experiment_name}")
-        print(f"Output directory: {self.output_dir}")
-        print("=" * 60)
-        
-        self._setup_output_dirs()
-        output_files = {}
-        
-        # 1. Load all data
-        print("\n[1/7] Loading data...")
-        self.raw_data = self.loader.load_all()
-        
-        if self.raw_data.empty:
-            raise ValueError("No data loaded. Check file paths in configuration.")
-        
-        print(f"  Loaded {len(self.raw_data):,} cells")
-        print(f"  Genotypes: {self.raw_data['genotype'].unique().tolist()}")
-        print(f"  Drugs: {self.raw_data['drug'].unique().tolist()}")
-        
-        # 2. Preprocess per-genotype
-        print("\n[2/7] Preprocessing (per-genotype normalization)...")
-        self.data_per_geno, self.feature_cols_per_geno = (
-            self.preprocessor_per_geno.preprocess_per_genotype(self.raw_data)
-        )
-        print(f"  Feature columns: {len(self.feature_cols_per_geno)}")
-        
-        # 3. Preprocess across-all
-        print("\n[3/7] Preprocessing (across-all normalization)...")
-        self.data_across_all, self.feature_cols_across = (
-            self.preprocessor_across.preprocess_across_all(self.raw_data)
-        )
-        print(f"  Feature columns: {len(self.feature_cols_across)}")
-        
-        # 4. Compile crowding metrics
-        print("\n[4/7] Compiling crowding metrics...")
-        crowding_per_geno = self.crowding_analyzer.compile_crowding_by_drug_dose(
-            self.data_per_geno, "per_genotype"
-        )
-        crowding_across = self.crowding_analyzer.compile_crowding_by_drug_dose(
-            self.data_across_all, "across_all"
-        )
-        
-        crowding_combined = pd.concat(
-            [crowding_per_geno, crowding_across],
-            ignore_index=True
-        )
-        
-        crowding_path = self.output_dir / "crowding" / "crowding_by_drug_dose.csv"
-        crowding_combined.to_csv(crowding_path, index=False)
-        output_files['crowding'] = crowding_path
-        print(f"  Saved: {crowding_path}")
-        
-        # 5. Compile QC metrics
-        print("\n[5/7] Compiling QC metrics...")
-        qc_metrics = self._compile_all_qc()
-        qc_path = self.output_dir / "qc" / "well_qc_metrics.csv"
-        qc_metrics.to_csv(qc_path, index=False)
-        output_files['qc'] = qc_path
-        print(f"  Saved: {qc_path}")
-        
-        # 6. Generate per-well CSVs
-        print("\n[6/7] Generating per-well CSVs...")
-        well_paths = self._save_per_well_csvs()
-        output_files['per_well'] = well_paths
-        
-        # 7. Generate aggregated profiles and PCA
-        print("\n[7/7] Computing aggregated profiles and PCA...")
-        profile_paths = self._compute_profiles_and_pca()
-        output_files.update(profile_paths)
-        
-        # Save manifest
-        self._save_manifest(output_files)
-        
-        print("\n" + "=" * 60)
-        print("Pipeline complete!")
-        print(f"Results saved to: {self.output_dir}")
-        
-        return output_files
-    
-    def _compile_all_qc(self) -> pd.DataFrame:
-        """Compile QC metrics for all data."""
-        groupby_cols = ['plate', 'well', 'genotype', 'drug', 'dilut_string']
-        groupby_cols = [c for c in groupby_cols if c in self.raw_data.columns]
-        
-        return self.qc_compiler.compile_well_qc(self.raw_data, groupby_cols)
-    
-    def _save_per_well_csvs(self) -> Dict[str, Path]:
-        """Save per-well aggregated data for both preprocessing modes."""
-        paths = {}
-        
-        for mode, df, feature_cols in [
-            ("per_genotype", self.data_per_geno, self.feature_cols_per_geno),
-            ("across_all", self.data_across_all, self.feature_cols_across),
-        ]:
-            mode_dir = self.output_dir / "per_well" / mode
-            mode_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Group by well and aggregate
-            groupby_cols = ['plate', 'well']
-            meta_cols = ['genotype', 'drug', 'dilut_string', 'dilut_um', 'is_control', 'moa']
-            
-            groupby_cols = [c for c in groupby_cols if c in df.columns]
-            meta_cols = [c for c in meta_cols if c in df.columns]
-            
-            if not groupby_cols:
-                continue
-            
-            # Aggregate features
-            agg_dict = {col: 'median' for col in feature_cols if col in df.columns}
-            
-            # Add metadata (take first value)
-            for col in meta_cols:
-                agg_dict[col] = 'first'
-            
-            # Add cell count
-            well_data = df.groupby(groupby_cols).agg(agg_dict).reset_index()
-            cell_counts = df.groupby(groupby_cols).size().rename('cell_count')
-            well_data = well_data.merge(cell_counts.reset_index(), on=groupby_cols)
-            
-            # Save combined file
-            combined_path = mode_dir / f"well_profiles_{mode}.csv"
-            well_data.to_csv(combined_path, index=False)
-            paths[f"well_profiles_{mode}"] = combined_path
-            
-            # Save per-genotype files
-            if 'genotype' in well_data.columns:
-                for geno in well_data['genotype'].unique():
-                    geno_data = well_data[well_data['genotype'] == geno]
-                    geno_path = mode_dir / f"well_profiles_{geno}_{mode}.csv"
-                    geno_data.to_csv(geno_path, index=False)
-                    paths[f"well_profiles_{geno}_{mode}"] = geno_path
-            
-            print(f"  Saved {mode} well profiles: {len(well_data)} wells")
-        
-        return paths
-    
-    def _compute_profiles_and_pca(self) -> Dict[str, Path]:
-        """Compute aggregated profiles and PCA for both preprocessing modes."""
-        paths = {}
-        
-        for mode, df, feature_cols in [
-            ("per_genotype", self.data_per_geno, self.feature_cols_per_geno),
-            ("across_all", self.data_across_all, self.feature_cols_across),
-        ]:
-            pca_dir = self.output_dir / "pca" / mode
-            pca_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Select features
-            selected_features = self.feature_selector.select_features(df, feature_cols)
-            
-            if len(selected_features) < 2:
-                print(f"  Warning: Insufficient features for PCA ({mode})")
-                continue
-            
-            # Aggregate to well level
-            groupby_cols = ['plate', 'well']
-            meta_cols = ['genotype', 'drug', 'dilut_string', 'dilut_um', 'is_control', 'moa']
-            
-            groupby_cols = [c for c in groupby_cols if c in df.columns]
-            meta_cols = [c for c in meta_cols if c in df.columns]
-            
-            if not groupby_cols:
-                continue
-            
-            # Aggregate
-            agg_dict = {col: 'median' for col in selected_features}
-            for col in meta_cols:
-                agg_dict[col] = 'first'
-            
-            profiles = df.groupby(groupby_cols).agg(agg_dict).reset_index()
-            
-            # Add cell count
-            cell_counts = df.groupby(groupby_cols).size().rename('cell_count')
-            profiles = profiles.merge(cell_counts.reset_index(), on=groupby_cols)
-            
-            # Compute PCA
-            X = profiles[selected_features].fillna(0).values
-            
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            n_components = min(10, len(selected_features), len(profiles) - 1)
-            if n_components < 2:
-                n_components = 2
-            
-            pca = PCA(n_components=n_components, random_state=42)
-            pcs = pca.fit_transform(X_scaled)
-            
-            for i in range(n_components):
-                profiles[f'PC{i+1}'] = pcs[:, i]
-            
-            # Save profiles with PCA
-            profiles_path = pca_dir / f"profiles_pca_{mode}.csv"
-            profiles.to_csv(profiles_path, index=False)
-            paths[f"profiles_pca_{mode}"] = profiles_path
-            
-            # Save PCA loadings
-            loadings = pd.DataFrame(
-                pca.components_.T,
-                columns=[f'PC{i+1}' for i in range(n_components)],
-                index=selected_features
-            )
-            loadings_path = pca_dir / f"pca_loadings_{mode}.csv"
-            loadings.to_csv(loadings_path)
-            paths[f"pca_loadings_{mode}"] = loadings_path
-            
-            # Save variance explained
-            var_explained = pd.DataFrame({
-                'PC': [f'PC{i+1}' for i in range(n_components)],
-                'variance_explained': pca.explained_variance_,
-                'variance_ratio': pca.explained_variance_ratio_,
-                'cumulative_variance_ratio': np.cumsum(pca.explained_variance_ratio_),
-            })
-            var_path = pca_dir / f"pca_variance_{mode}.csv"
-            var_explained.to_csv(var_path, index=False)
-            paths[f"pca_variance_{mode}"] = var_path
-            
-            print(f"  {mode}: {len(selected_features)} features, "
-                  f"PC1={pca.explained_variance_ratio_[0]*100:.1f}%, "
-                  f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
-        
-        return paths
-    
-    def _save_manifest(self, output_files: Dict[str, Any]):
-        """Save pipeline manifest with metadata."""
-        manifest = {
-            "experiment_name": self.config.experiment_name,
-            "analysis_date": datetime.now().isoformat(),
-            "configuration": {
-                "genotypes": list(self.config.genotypes.keys()),
-                "control_label": self.config.control_label,
-                "dilut_column": self.config.dilut_column,
-            },
-            "data_summary": {
-                "total_cells": len(self.raw_data) if self.raw_data is not None else 0,
-                "genotypes": (
-                    self.raw_data['genotype'].unique().tolist()
-                    if self.raw_data is not None and 'genotype' in self.raw_data.columns
-                    else []
-                ),
-                "drugs": (
-                    self.raw_data['drug'].unique().tolist()
-                    if self.raw_data is not None and 'drug' in self.raw_data.columns
-                    else []
-                ),
-            },
-            "feature_counts": {
-                "per_genotype": len(self.feature_cols_per_geno),
-                "across_all": len(self.feature_cols_across),
-            },
-            "output_files": {
-                k: str(v) if isinstance(v, Path) else v
-                for k, v in output_files.items()
-            },
-        }
-        
-        manifest_path = self.output_dir / "manifest.json"
-        with open(manifest_path, 'w') as f:
-            json.dump(manifest, f, indent=2)
-        
-        print(f"\nManifest saved: {manifest_path}")
-
-
-# =============================================================================
-# CONVENIENCE FUNCTIONS
-# =============================================================================
-
-def run_pipeline_from_json(
-    json_path: Union[str, Path],
-    output_dir: Optional[Union[str, Path]] = None,
-) -> Dict[str, Path]:
-    """
-    Run the complete pipeline from a JSON configuration file.
-    
-    Parameters
-    ----------
-    json_path : str or Path
-        Path to JSON configuration file
-    output_dir : str or Path, optional
-        Output directory (overrides config)
-    
-    Returns
-    -------
-    dict
-        Dictionary mapping output names to file paths
-    """
-    config = ExperimentConfig.from_json(json_path)
-    pipeline = DNADamageAnalysisPipeline(config, output_dir)
-    return pipeline.run()
-
-
-def create_example_config(output_path: Union[str, Path] = "example_config.json"):
-    """Create an example configuration JSON file."""
-    example = {
-        "metadata": {
-            "experiment_name": "DNA_Damage_Experiment_001",
-            "date": "2024-01-01",
-            "control_label": "DMSO",
-            "dilut_column": "Dilut",
-            "output_dir": "./analysis_output"
-        },
-        "genotypes": {
-            "WT": {
-                "drugs": {
-                    "Etoposide": {
-                        "path": "/path/to/WT_Etoposide.parquet",
-                        "ec50_um": 1.5,
-                        "max_dose": "100uM",
-                        "moa": "Topoisomerase II inhibitor"
-                    },
-                    "Camptothecin": {
-                        "path": "/path/to/WT_Camptothecin.parquet",
-                        "ec50_um": 0.5,
-                        "max_dose": "33uM",
-                        "moa": "Topoisomerase I inhibitor"
-                    },
-                    "Cisplatin": {
-                        "path": "/path/to/WT_Cisplatin.parquet",
-                        "ec50_um": 5.0,
-                        "max_dose": "100uM",
-                        "moa": "DNA crosslinker"
-                    }
-                }
-            },
-            "KO1": {
-                "drugs": {
-                    "Etoposide": {
-                        "path": "/path/to/KO1_Etoposide.parquet",
-                        "ec50_um": 2.0,
-                        "max_dose": "100uM",
-                        "moa": "Topoisomerase II inhibitor"
-                    },
-                    "Camptothecin": {
-                        "path": "/path/to/KO1_Camptothecin.parquet",
-                        "ec50_um": 0.8,
-                        "max_dose": "33uM",
-                        "moa": "Topoisomerase I inhibitor"
-                    }
-                }
-            }
-        }
-    }
-    
-    with open(output_path, 'w') as f:
-        json.dump(example, f, indent=2)
-    
-    print(f"Example configuration saved to: {output_path}")
-    return output_path
-
-
-# =============================================================================
-# MAIN ENTRY POINT
-# =============================================================================
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="DNA Damage Panel Parquet Analysis Pipeline"
-    )
-    parser.add_argument(
-        "config",
-        nargs="?",
-        help="Path to JSON configuration file"
-    )
-    parser.add_argument(
-        "--output", "-o",
-        help="Output directory (overrides config)"
-    )
-    parser.add_argument(
-        "--example",
-        action="store_true",
-        help="Create example configuration file and exit"
-    )
-    
-    args = parser.parse_args()
-    
-    if args.example:
-        create_example_config()
-    elif args.config:
-        results = run_pipeline_from_json(args.config, args.output)
-        print("\nGenerated files:")
-        for name, path in results.items():
-            if isinstance(path, dict):
-                for k, v in path.items():
-                    print(f"  {k}: {v}")
-            else:
-                print(f"  {name}: {path}")
-    else:
-        parser.print_help()
