@@ -32,6 +32,13 @@ CROWDING_FEATURES_DEFAULT = [
     "nn_dist_px_mean",
 ]
 
+CHANNEL_COLORS = {
+    "ki67": "#d62728",
+    "h2ax": "#ff7f0e",
+    "sytogreen": "#2ca02c",
+    "dapi": "#1f77b4",
+}
+
 
 @dataclass
 class PlotResult:
@@ -72,6 +79,8 @@ class PlotGenerator:
             (lambda p: p.name.startswith("ec50_bootstrap_"), self._handle_ec50_bootstrap),
             (lambda p: p.name.startswith("genotype_comparison_"), self._handle_genotype_comparison),
             (lambda p: p.name.startswith("distance_heatmap_"), self._handle_distance_heatmap),
+            (lambda p: p.name.startswith("ec50_profiles_"), lambda p, d: self._handle_ec50_or_dmso_profiles(p, d, "ec50")),
+            (lambda p: p.name.startswith("dmso_profiles_"), lambda p, d: self._handle_ec50_or_dmso_profiles(p, d, "dmso")),
             (lambda p: p.name.startswith("well_profiles_") or p.name.startswith("profiles_pca_"), self._handle_well_profiles),
             (lambda p: p.name.startswith("well_effects_") or p.name.startswith("profiles_delta"), self._handle_well_effects),
         ]
@@ -244,7 +253,12 @@ class PlotGenerator:
         area_col = "cell_area_mean" if "cell_area_mean" in df.columns else "area_mean" if "area_mean" in df.columns else None
         if area_col and "cell_count" in df.columns:
             fig, ax = plt.subplots(figsize=(6.5, 4.5))
-            ax.scatter(df[area_col], df["cell_count"], s=18, alpha=0.7)
+            if "genotype" in df.columns:
+                for key, sub in df.groupby("genotype"):
+                    ax.scatter(sub[area_col], sub["cell_count"], s=18, alpha=0.7, label=str(key))
+                ax.legend(fontsize=8)
+            else:
+                ax.scatter(df[area_col], df["cell_count"], s=18, alpha=0.7)
             ax.set_xlabel(area_col)
             ax.set_ylabel("cell_count")
             ax.set_title(f"Cell area proxy vs cell count ({area_col})")
@@ -304,6 +318,68 @@ class PlotGenerator:
             if mode in name:
                 return mode
         return "uncorrected"
+
+    def _mode_from_path(self, csv_path: Path) -> str:
+        try:
+            rel = csv_path.resolve().relative_to(self.output_dir.resolve())
+            if rel.parts:
+                return rel.parts[0]
+        except Exception:
+            pass
+        return self._mode_from_name(csv_path.stem)
+
+    def _pca_variance_lookup(self, mode: str) -> dict[str, float]:
+        out: dict[str, float] = {}
+        var_csv = self.output_dir / mode / "plots" / "embedding" / f"pca_variance_{mode}.csv"
+        if not var_csv.exists():
+            return out
+        var_df = self._load_csv(var_csv)
+        if {"PC", "variance_ratio"}.issubset(var_df.columns):
+            out = dict(zip(var_df["PC"].astype(str), var_df["variance_ratio"].astype(float)))
+        return out
+
+    @staticmethod
+    def _feature_channel(feature: str) -> str:
+        feat = str(feature).lower().replace("-", "_")
+        if "ki67" in feat:
+            return "ki67"
+        if "h2ax" in feat or "gamma_h2ax" in feat:
+            return "h2ax"
+        if "sytogreen" in feat or "syto_green" in feat:
+            return "sytogreen"
+        if "dapi" in feat:
+            return "dapi"
+        return "other"
+
+    def _channel_color(self, feature: str) -> str:
+        return CHANNEL_COLORS.get(self._feature_channel(feature), "#7f7f7f")
+
+    def _pca_labels(self, pcx: str, pcy: str, variance_map: dict[str, float]) -> tuple[str, str]:
+        x_var = variance_map.get(pcx)
+        y_var = variance_map.get(pcy)
+        xlab = f"{pcx} ({x_var * 100:.1f}% var)" if x_var is not None else pcx
+        ylab = f"{pcy} ({y_var * 100:.1f}% var)" if y_var is not None else pcy
+        return xlab, ylab
+
+    def _compute_pca(self, df: pd.DataFrame, feature_cols: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]] | None:
+        use = df[feature_cols].copy()
+        use = use.loc[:, use.notna().any(axis=0)]
+        if use.shape[1] < 2 or len(use) < 3:
+            return None
+        X = use.fillna(0.0).to_numpy(dtype=float)
+        X = X - np.nanmean(X, axis=0, keepdims=True)
+        std = np.nanstd(X, axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        X = X / std
+        U, S, Vt = np.linalg.svd(X, full_matrices=False)
+        n_comp = min(2, Vt.shape[0])
+        scores = U[:, :n_comp] * S[:n_comp]
+        pcs = [f"PC{i+1}" for i in range(n_comp)]
+        scores_df = pd.DataFrame(scores, columns=pcs, index=df.index)
+        load_df = pd.DataFrame(Vt[:n_comp].T, columns=pcs, index=use.columns)
+        var = (S ** 2) / np.sum(S ** 2) if np.sum(S ** 2) > 0 else np.zeros_like(S)
+        var_map = {f"PC{i+1}": float(var[i]) for i in range(n_comp)}
+        return scores_df, load_df, var_map
 
     def _handle_well_profiles(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         mode = self._mode_from_name(csv_path.stem)
@@ -393,6 +469,7 @@ class PlotGenerator:
         mode = self._mode_from_name(csv_path.stem)
         plot_dir = self.output_dir / "plots" / mode
         out: list[Path] = []
+        variance_map = self._pca_variance_lookup(mode)
 
         # color by genotype
         fig, ax = plt.subplots(figsize=(6.5, 5))
@@ -403,8 +480,9 @@ class PlotGenerator:
             ax.legend(fontsize=8)
         else:
             ax.scatter(df["PC1"], df["PC2"], s=18, alpha=0.7)
-        ax.set_xlabel("PC1")
-        ax.set_ylabel("PC2")
+        xlab, ylab = self._pca_labels("PC1", "PC2", variance_map)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
         ax.set_title(f"PCA profiles ({mode})")
         out.append(self._save(fig, plot_dir / f"profiles_pca_{mode}_pc1_pc2.png"))
 
@@ -413,8 +491,9 @@ class PlotGenerator:
             fig, ax = plt.subplots(figsize=(6.5, 5))
             for key, sub in df.groupby("plate"):
                 ax.scatter(sub["PC1"], sub["PC2"], s=16, alpha=0.65, label=str(key))
-            ax.set_xlabel("PC1")
-            ax.set_ylabel("PC2")
+            xlab, ylab = self._pca_labels("PC1", "PC2", variance_map)
+            ax.set_xlabel(xlab)
+            ax.set_ylabel(ylab)
             ax.set_title(f"PCA by plate ({mode})")
             if df["plate"].nunique() <= 15:
                 ax.legend(fontsize=6)
@@ -442,15 +521,21 @@ class PlotGenerator:
         if feature_col.startswith("Unnamed"):
             df = df.rename(columns={feature_col: "feature"})
             feature_col = "feature"
-        use = df[[feature_col, "PC1"]].dropna().copy()
-        if use.empty:
-            return []
-        use["abs_pc1"] = use["PC1"].abs()
-        top = use.nlargest(20, "abs_pc1").sort_values("PC1")
-        fig, ax = plt.subplots(figsize=(7, 6))
-        ax.barh(top[feature_col].astype(str), top["PC1"], color="#55A868")
-        ax.set_title(f"Top PC1 loadings ({mode})")
-        return [self._save(fig, self.output_dir / "plots" / mode / f"pca_loadings_{mode}_pc1_loadings.png")]
+        out: list[Path] = []
+        for pc in ["PC1", "PC2"]:
+            if pc not in df.columns:
+                continue
+            use = df[[feature_col, pc]].dropna().copy()
+            if use.empty:
+                continue
+            use["abs_loading"] = use[pc].abs()
+            top = use.nlargest(20, "abs_loading").sort_values(pc)
+            fig, ax = plt.subplots(figsize=(7, 6))
+            colors = [self._channel_color(feat) for feat in top[feature_col].astype(str)]
+            ax.barh(top[feature_col].astype(str), top[pc], color=colors)
+            ax.set_title(f"Top {pc} loadings ({mode})")
+            out.append(self._save(fig, self.output_dir / "plots" / mode / f"pca_loadings_{mode}_{pc.lower()}_loadings.png"))
+        return out
 
     def _response_columns(self, df: pd.DataFrame) -> list[str]:
         resp = []
@@ -459,19 +544,51 @@ class PlotGenerator:
                 resp.append(c)
         return resp
 
+    def _overlay_per_well_points(
+        self,
+        mode: str,
+        response_col: str,
+        ax: plt.Axes,
+        gcols: list[str],
+    ) -> None:
+        raw_path = self.output_dir / mode / "tables" / "profiles_delta.parquet"
+        if not raw_path.exists():
+            return
+        try:
+            raw = pd.read_parquet(raw_path)
+        except Exception:
+            return
+        if response_col not in raw.columns or "dilut_um" not in raw.columns:
+            return
+        cols = list(dict.fromkeys(gcols + ["dilut_um", response_col]))
+        dots = raw[cols].dropna()
+        if dots.empty:
+            return
+        if gcols:
+            for _, sub in dots.groupby(gcols):
+                ax.scatter(sub["dilut_um"], sub[response_col], s=12, alpha=0.2, color="black")
+        else:
+            ax.scatter(dots["dilut_um"], dots[response_col], s=12, alpha=0.2, color="black")
+
     def _handle_dose_response_summary(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         df = self._as_numeric_dose(df)
         if "dilut_um" not in df.columns:
             return []
         out: list[Path] = []
+        mode = self._mode_from_path(csv_path)
         for resp in self._response_columns(df)[:4]:
             fig, ax = plt.subplots(figsize=(7, 4.5))
             gcols = [c for c in ["genotype", "drug"] if c in df.columns]
             use = df[gcols + ["dilut_um", resp]].dropna()
-            for name, sub in use.groupby(gcols):
-                label = name if isinstance(name, str) else " | ".join(map(str, name))
-                sub = sub.sort_values("dilut_um")
-                ax.plot(sub["dilut_um"], sub[resp], marker="o", label=label)
+            self._overlay_per_well_points(mode, resp.replace("_mean", ""), ax, gcols)
+            if gcols:
+                for name, sub in use.groupby(gcols):
+                    label = name if isinstance(name, str) else " | ".join(map(str, name))
+                    sub = sub.sort_values("dilut_um")
+                    ax.plot(sub["dilut_um"], sub[resp], marker="o", label=label)
+            else:
+                sub = use.sort_values("dilut_um")
+                ax.plot(sub["dilut_um"], sub[resp], marker="o")
             if (use["dilut_um"] > 0).any():
                 ax.set_xscale("log")
             ax.set_xlabel("dilut_um")
@@ -506,25 +623,49 @@ class PlotGenerator:
                 ax.plot(x, y, "o")
             ax.set_xticks(x)
             ax.set_xticklabels(labels, rotation=45, ha="right")
-            ax.set_ylabel("EC50")
+            ax.set_ylabel("EC50 (µM)")
             ax.set_title(f"Dose-response fits ({response})")
             out.append(self._save(fig, self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_ec50.png"))
+            fig_log, ax_log = plt.subplots(figsize=(max(7, len(p) * 0.5), 4.5))
+            y_log = np.log10(y)
+            if {"ec50_ci_lower", "ec50_ci_upper"}.issubset(p.columns):
+                low_log = y_log - np.log10(np.clip(p["ec50_ci_lower"].values, 1e-12, None))
+                up_log = np.log10(np.clip(p["ec50_ci_upper"].values, 1e-12, None)) - y_log
+                ax_log.errorbar(x, y_log, yerr=np.vstack([low_log, up_log]), fmt="o", capsize=4)
+            else:
+                ax_log.plot(x, y_log, "o")
+            ax_log.set_xticks(x)
+            ax_log.set_xticklabels(labels, rotation=45, ha="right")
+            ax_log.set_ylabel("log10(EC50 [µM])")
+            ax_log.set_title(f"Dose-response fits log scale ({response})")
+            out.append(self._save(fig_log, self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_log10_ec50.png"))
         return out
 
     def _handle_fold_change(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         df = self._as_numeric_dose(df)
         if "dilut_um" not in df.columns:
             return []
-        cols = [c for c in df.columns if c.endswith("_log2_fc")][:4]
+        cols = [c for c in df.columns if c.endswith("_log2_fc") or c.endswith("_log2fc")][:6]
         out: list[Path] = []
         for col in cols:
             fig, ax = plt.subplots(figsize=(7, 4.5))
             gcols = [c for c in ["genotype", "drug"] if c in df.columns]
             use = df[gcols + ["dilut_um", col]].dropna()
-            for name, sub in use.groupby(gcols):
-                label = name if isinstance(name, str) else " | ".join(map(str, name))
-                sub = sub.sort_values("dilut_um")
-                ax.plot(sub["dilut_um"], sub[col], marker="o", label=label)
+            if use.empty:
+                plt.close(fig)
+                continue
+            if gcols:
+                for name, sub in use.groupby(gcols):
+                    label = name if isinstance(name, str) else " | ".join(map(str, name))
+                    sub = sub.sort_values("dilut_um")
+                    ax.scatter(sub["dilut_um"], sub[col], s=16, alpha=0.3)
+                    trend = sub.groupby("dilut_um")[col].mean().reset_index()
+                    ax.plot(trend["dilut_um"], trend[col], marker="o", label=label)
+            else:
+                sub = use.sort_values("dilut_um")
+                ax.scatter(sub["dilut_um"], sub[col], s=16, alpha=0.3)
+                trend = sub.groupby("dilut_um")[col].mean().reset_index()
+                ax.plot(trend["dilut_um"], trend[col], marker="o")
             if (use["dilut_um"] > 0).any():
                 ax.set_xscale("log")
             ax.set_xlabel("dilut_um")
@@ -589,6 +730,44 @@ class PlotGenerator:
         ax.set_yticklabels(labels, fontsize=7)
         ax.set_title(f"Correlation distance ({mode})")
         return [self._save(fig, self.output_dir / "plots" / "clustering" / f"distance_heatmap_{mode}.png")]
+
+    def _handle_ec50_or_dmso_profiles(self, csv_path: Path, df: pd.DataFrame, prefix: str) -> list[Path]:
+        mode = self._mode_from_path(csv_path)
+        feature_cols = [
+            c for c in df.select_dtypes(include=[np.number]).columns
+            if c not in {"PC1", "PC2", "dilut_um", "is_control"} and not c.endswith(("_median", "_mad"))
+        ]
+        pca_result = self._compute_pca(df, feature_cols)
+        if pca_result is None:
+            return []
+        scores_df, load_df, var_map = pca_result
+        merged = pd.concat([df.reset_index(drop=True), scores_df.reset_index(drop=True)], axis=1)
+        out: list[Path] = []
+        subdir = "ec50_focused" if prefix == "ec50" else "dmso_controls"
+
+        fig, ax = plt.subplots(figsize=(6.5, 5))
+        if "genotype" in merged.columns:
+            for key, sub in merged.groupby("genotype"):
+                ax.scatter(sub["PC1"], sub["PC2"], s=20, alpha=0.8, label=str(key))
+            ax.legend(fontsize=8)
+        else:
+            ax.scatter(merged["PC1"], merged["PC2"], s=20, alpha=0.8)
+        xlab, ylab = self._pca_labels("PC1", "PC2", var_map)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
+        ax.set_title(f"{prefix.upper()} PCA ({mode})")
+        out.append(self._save(fig, self.output_dir / "plots" / subdir / f"{prefix}_pca_{mode}_pc1_pc2.png"))
+
+        for pc in ["PC1", "PC2"]:
+            if pc not in load_df.columns:
+                continue
+            top = load_df.assign(abs_loading=load_df[pc].abs()).nlargest(20, "abs_loading").sort_values(pc)
+            fig_l, ax_l = plt.subplots(figsize=(7, 6))
+            colors = [self._channel_color(feat) for feat in top.index.astype(str)]
+            ax_l.barh(top.index.astype(str), top[pc], color=colors)
+            ax_l.set_title(f"{prefix.upper()} top {pc} loadings ({mode})")
+            out.append(self._save(fig_l, self.output_dir / "plots" / subdir / f"{prefix}_pca_loadings_{mode}_{pc.lower()}.png"))
+        return out
 
     def _fallback_generic(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         numeric = df.select_dtypes(include=[np.number]).columns.tolist()
