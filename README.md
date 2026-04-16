@@ -227,3 +227,13 @@ python demo_dna_damage_pipeline.py genotype
 python demo_dna_damage_pipeline.py crowding
 python demo_dna_damage_pipeline.py qc
 ```
+
+For reproducible package setup and the canonical test command that uses repository test fixtures, see [TESTING_ENVIRONMENT.md](TESTING_ENVIRONMENT.md).
+
+### Plot output notes
+
+- PCA scatter axes include explained-variance percentages when variance metadata is available.
+- PCA loading plots are emitted for both **PC1** and **PC2**.
+- Loading bars are channel-colored (Ki67 red, H2Ax orange, Sytogreen green, DAPI blue).
+- Dose-response summaries/fold-change plots now show individual well-level dots alongside summary trends.
+- Dose-response fit outputs include both EC50 (µM) and log10(EC50 [µM]) visualizations.
