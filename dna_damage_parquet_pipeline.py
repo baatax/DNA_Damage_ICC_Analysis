@@ -340,6 +340,73 @@ def parse_dilution_to_components(dilut_str: str) -> tuple:
     return (None, None, np.nan)
 
 
+def format_concentration_um(conc_um: float) -> str:
+    """Format concentration in µM into a readable unit string."""
+    if pd.isna(conc_um):
+        return "nan"
+    if conc_um == 0:
+        return "0uM"
+    if conc_um >= 1000:
+        return f"{conc_um / 1000:g}mM"
+    if conc_um >= 1:
+        return f"{conc_um:g}uM"
+    if conc_um >= 1e-3:
+        return f"{conc_um * 1000:g}nM"
+    return f"{conc_um * 1e6:g}pM"
+
+
+def relabel_pseudo_dilution_series(
+    raw_labels: pd.Series,
+    control_label: str,
+    max_dose: Optional[str],
+    dilution_factor: float = 3.0,
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Relabel a pseudo dilution series based on configured top concentration.
+
+    Returns:
+        tuple[pd.Series, pd.Series, pd.Series]:
+            (corrected_label, corrected_um, dilution_level)
+    """
+    raw_str = raw_labels.astype(str)
+    raw_um = raw_str.apply(parse_dilution_string)
+    is_control = raw_str.str.upper() == control_label.upper()
+
+    corrected_um = raw_um.copy()
+    corrected_label = raw_str.copy()
+    dilution_level = pd.Series(np.nan, index=raw_labels.index, dtype=float)
+
+    max_dose_um = parse_dilution_string(max_dose) if max_dose else np.nan
+    if pd.isna(max_dose_um) or max_dose_um <= 0 or dilution_factor <= 0:
+        return corrected_label, corrected_um, dilution_level
+
+    non_control_labels = raw_str.loc[~is_control].dropna().unique()
+    if len(non_control_labels) == 0:
+        return corrected_label, corrected_um, dilution_level
+
+    rank_basis = []
+    for label in non_control_labels:
+        conc_um = parse_dilution_string(label)
+        sort_val = conc_um if not pd.isna(conc_um) else -np.inf
+        rank_basis.append((label, sort_val))
+    rank_basis = sorted(rank_basis, key=lambda x: x[1], reverse=True)
+
+    label_to_rank = {label: rank for rank, (label, _) in enumerate(rank_basis)}
+
+    for label, rank in label_to_rank.items():
+        assigned_um = max_dose_um / (dilution_factor ** rank)
+        idx = (raw_str == label) & (~is_control)
+        corrected_um.loc[idx] = assigned_um
+        corrected_label.loc[idx] = format_concentration_um(assigned_um)
+        dilution_level.loc[idx] = float(rank)
+
+    corrected_um.loc[is_control] = 0.0
+    corrected_label.loc[is_control] = control_label
+    dilution_level.loc[is_control] = np.nan
+
+    return corrected_label, corrected_um, dilution_level
+
+
 def get_numeric_columns(df: pd.DataFrame, exclude: Optional[List[str]] = None) -> List[str]:
     """Get numeric column names, excluding specified columns."""
     exclude = exclude or []
@@ -391,9 +458,22 @@ class DNADamageDataLoader:
         
         # Parse dilution to numeric
         if self.config.dilut_column in df.columns:
-            df['dilut_string'] = df[self.config.dilut_column].astype(str)
+            df['raw_dilut_string'] = df[self.config.dilut_column].astype(str)
+            df['dilut_string'] = df['raw_dilut_string'].copy()
             df['dilut_um'] = df['dilut_string'].apply(parse_dilution_string)
             df['is_control'] = df['dilut_string'].str.upper() == self.config.control_label.upper()
+
+            if drug_config.max_dose:
+                corrected_label, corrected_um, dilution_level = relabel_pseudo_dilution_series(
+                    raw_labels=df['raw_dilut_string'],
+                    control_label=self.config.control_label,
+                    max_dose=drug_config.max_dose,
+                    dilution_factor=drug_config.dilution_factor,
+                )
+                df['dilut_string'] = corrected_label
+                df['dilut_um'] = corrected_um
+                df['dilution_level'] = dilution_level
+                df['is_control'] = df['raw_dilut_string'].str.upper() == self.config.control_label.upper()
         
         # Add EC50 info
         if drug_config.ec50_um is not None:
@@ -456,7 +536,8 @@ class DNADamagePreprocessor:
     # Columns to exclude from feature normalization
     METADATA_COLS = [
         'cell_id', 'plate', 'well', 'site', 'timepoint', 'field_dir', 'base_name',
-        'genotype', 'drug', 'moa', 'dilut_string', 'dilut_um', 'is_control',
+        'genotype', 'drug', 'moa', 'raw_dilut_string', 'dilut_string', 'dilut_um',
+        'dilution_level', 'is_control',
         'ec50_um', 'log_dose_ec50_ratio', 'Dilut', 'group', 'treatment',
         'well_row', 'well_col', 'well_row_index', 'well_col_index',
         'plate_row_edge_dist', 'plate_col_edge_dist', 'plate_edge_dist_min',
@@ -978,7 +1059,8 @@ class QCMetricsCompiler:
     def _get_feature_cols(self, df: pd.DataFrame) -> List[str]:
         exclude = {
             'cell_id', 'plate', 'well', 'site', 'timepoint', 'field_dir', 'base_name',
-            'genotype', 'drug', 'moa', 'dilut_string', 'dilut_um', 'is_control',
+            'genotype', 'drug', 'moa', 'raw_dilut_string', 'dilut_string', 'dilut_um',
+            'dilution_level', 'is_control',
             'ec50_um', 'log_dose_ec50_ratio', 'Dilut', 'group', 'treatment',
             'well_row', 'well_col', 'well_row_index', 'well_col_index',
             'plate_row_edge_dist', 'plate_col_edge_dist', 'plate_edge_dist_min',
@@ -1063,5 +1145,3 @@ class FeatureSelector:
         
         selected = [c for c in keep_var if c not in to_drop]
         return selected
-
-

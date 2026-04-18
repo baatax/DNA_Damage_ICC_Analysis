@@ -476,7 +476,7 @@ class PlotGenerator:
         color_col = "genotype" if "genotype" in df.columns else None
         if color_col:
             for key, sub in df.groupby(color_col):
-                ax.scatter(sub["PC1"], sub["PC2"], s=18, alpha=0.7, label=str(key))
+                ax.scatter(sub["PC1"], sub["PC2"], s=18, alpha=0.7, label=f"{key} (n={len(sub)})")
             ax.legend(fontsize=8)
         else:
             ax.scatter(df["PC1"], df["PC2"], s=18, alpha=0.7)
@@ -490,13 +490,12 @@ class PlotGenerator:
         if "plate" in df.columns:
             fig, ax = plt.subplots(figsize=(6.5, 5))
             for key, sub in df.groupby("plate"):
-                ax.scatter(sub["PC1"], sub["PC2"], s=16, alpha=0.65, label=str(key))
+                ax.scatter(sub["PC1"], sub["PC2"], s=16, alpha=0.65, label=f"{key} (n={len(sub)})")
             xlab, ylab = self._pca_labels("PC1", "PC2", variance_map)
             ax.set_xlabel(xlab)
             ax.set_ylabel(ylab)
             ax.set_title(f"PCA by plate ({mode})")
-            if df["plate"].nunique() <= 15:
-                ax.legend(fontsize=6)
+            ax.legend(fontsize=6)
             out.append(self._save(fig, self.output_dir / "plots" / "qc" / f"pca_pc1_pc2_colored_by_plate_{mode}.png"))
         return out
 
@@ -639,6 +638,40 @@ class PlotGenerator:
             ax_log.set_ylabel("log10(EC50 [µM])")
             ax_log.set_title(f"Dose-response fits log scale ({response})")
             out.append(self._save(fig_log, self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_log10_ec50.png"))
+
+            if "ec50_pct_max" in p.columns:
+                p_pct = p.dropna(subset=["ec50_pct_max"]).copy()
+                p_pct = p_pct[p_pct["ec50_pct_max"] > 0]
+                if not p_pct.empty:
+                    labels_pct = [
+                        " | ".join(str(r.get(c, "")) for c in ["drug", "genotype"] if c in p_pct.columns).strip(" |")
+                        for _, r in p_pct.iterrows()
+                    ]
+                    x_pct = np.arange(len(p_pct))
+                    y_pct = p_pct["ec50_pct_max"].values
+
+                    fig_pct, ax_pct = plt.subplots(figsize=(max(7, len(p_pct) * 0.5), 4.5))
+                    ax_pct.plot(x_pct, y_pct, "o")
+                    ax_pct.set_xticks(x_pct)
+                    ax_pct.set_xticklabels(labels_pct, rotation=45, ha="right")
+                    ax_pct.set_ylabel("EC50 (% of max tested concentration)")
+                    ax_pct.set_title(f"Dose-response fits (% max conc, {response})")
+                    out.append(self._save(
+                        fig_pct,
+                        self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_ec50_pct_max.png",
+                    ))
+
+                    fig_pct_log, ax_pct_log = plt.subplots(figsize=(max(7, len(p_pct) * 0.5), 4.5))
+                    y_pct_log = np.log10(y_pct)
+                    ax_pct_log.plot(x_pct, y_pct_log, "o")
+                    ax_pct_log.set_xticks(x_pct)
+                    ax_pct_log.set_xticklabels(labels_pct, rotation=45, ha="right")
+                    ax_pct_log.set_ylabel("log10(EC50 [% max tested concentration])")
+                    ax_pct_log.set_title(f"Dose-response fits log scale (% max conc, {response})")
+                    out.append(self._save(
+                        fig_pct_log,
+                        self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_log10_ec50_pct_max.png",
+                    ))
         return out
 
     def _handle_fold_change(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
@@ -748,7 +781,7 @@ class PlotGenerator:
         fig, ax = plt.subplots(figsize=(6.5, 5))
         if "genotype" in merged.columns:
             for key, sub in merged.groupby("genotype"):
-                ax.scatter(sub["PC1"], sub["PC2"], s=20, alpha=0.8, label=str(key))
+                ax.scatter(sub["PC1"], sub["PC2"], s=20, alpha=0.8, label=f"{key} (n={len(sub)})")
             ax.legend(fontsize=8)
         else:
             ax.scatter(merged["PC1"], merged["PC2"], s=20, alpha=0.8)

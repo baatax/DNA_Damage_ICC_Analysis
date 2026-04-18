@@ -65,6 +65,11 @@ class PlotGenerationSmokeTest(unittest.TestCase):
             self.assertIsNotNone(match, "Plot generation step did not report generated plots")
             self.assertGreater(int(match.group(1)), 0, "Plot generation produced zero plots")
 
+            qc_report = run_out_dir / "tables" / "qc_exclusion_report.md"
+            self.assertTrue(qc_report.exists(), "Human-readable QC exclusion report was not generated")
+            report_text = qc_report.read_text(encoding="utf-8")
+            self.assertIn("# QC Exclusion Report", report_text)
+
             # QC plots should still be at the top level
             qc_plots = list((run_out_dir / "plots" / "qc").glob("*.png"))
             self.assertTrue(qc_plots, "No QC plots generated under plots/qc/")
@@ -78,6 +83,11 @@ class PlotGenerationSmokeTest(unittest.TestCase):
                 found_pca or found_dr,
                 "No PCA embedding or dose-response plots generated",
             )
+
+            pct_max_plots = list(dr_dir.glob("*_ec50_pct_max.png"))
+            pct_max_log_plots = list(dr_dir.glob("*_log10_ec50_pct_max.png"))
+            self.assertTrue(pct_max_plots, "No EC50 % max concentration plots generated")
+            self.assertTrue(pct_max_log_plots, "No log10 EC50 % max concentration plots generated")
 
 
 if __name__ == "__main__":
