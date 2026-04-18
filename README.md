@@ -125,9 +125,20 @@ Each genotype contains a `description` and a `drugs` map. Each drug entry specif
 |-------|-------------|
 | `path` | Path to the parquet file with single-cell features |
 | `ec50_um` | Expected EC50 in micromolar |
-| `max_dose` | Maximum dose as a string (e.g., `"100uM"`, `"10mM"`) |
+| `max_dose` | Maximum/top dose as a string (e.g., `"100uM"`, `"10mM"`). When set, the pipeline relabels non-control dose levels into a pseudo-serial dilution anchored at this value for downstream analyses. |
 | `moa` | Mechanism of action |
 | `dilution_factor` | Dilution series factor (e.g., `3.0` for 3x dilutions) |
+
+### Pseudo dilution relabeling (for mislabeled raw doses)
+
+If raw dose labels are inconsistent, set per-drug `max_dose` (and optionally `dilution_factor`, default `3.0`) in the config. During loading, the pipeline will:
+
+1. Keep the original labels in `raw_dilut_string`.
+2. Rank non-control dose levels by parsed concentration.
+3. Reassign concentrations as `max_dose / dilution_factor^rank`.
+4. Write corrected labels to `dilut_string` and corrected numeric values to `dilut_um`.
+
+Controls keep the configured `control_label` and `dilut_um = 0`.
 
 ## Output Structure
 
@@ -144,6 +155,8 @@ output_dir/
 ├── cache/            # Checkpoint data for resume
 └── manifest.json     # Pipeline metadata and file inventory
 ```
+
+QC tables also include `tables/qc_exclusion_report.md`, a human-readable list of excluded wells/samples with fail reasons.
 
 ## Experimental Unit and Statistical Design
 
@@ -185,6 +198,10 @@ y = bottom + (top - bottom) / (1 + (EC50 / x)^hill_slope)
 ```
 
 Returns EC50, Hill slope, confidence intervals, RMSE, AIC, model choice, and convergence diagnostics for each drug-genotype combination.
+
+Dose-response fit tables additionally include:
+- `max_tested_dose_um`: highest non-control concentration observed per fit group.
+- `ec50_pct_max`: EC50 represented as percentage of that max tested concentration.
 
 ### Statistical Comparisons
 
@@ -233,7 +250,9 @@ For reproducible package setup and the canonical test command that uses reposito
 ### Plot output notes
 
 - PCA scatter axes include explained-variance percentages when variance metadata is available.
+- PCA legends include per-group sample counts (`n=...`) for grouped PCA scatter plots.
 - PCA loading plots are emitted for both **PC1** and **PC2**.
 - Loading bars are channel-colored (Ki67 red, H2Ax orange, Sytogreen green, DAPI blue).
 - Dose-response summaries/fold-change plots now show individual well-level dots alongside summary trends.
 - Dose-response fit outputs include both EC50 (µM) and log10(EC50 [µM]) visualizations.
+- Dose-response fit outputs also include EC50 as **% of max tested concentration** plus **log10(% max)** visualizations.

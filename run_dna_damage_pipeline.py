@@ -566,11 +566,12 @@ class DNADamageProductionPipeline:
 
         # Remove failed wells from profiles
         n_before = len(self.well_profiles)
+        removed = pd.DataFrame()
         if 'qc_pass' in qc_decisions.columns:
             pass_wells = qc_decisions[qc_decisions['qc_pass']][groupby_cols].drop_duplicates()
             self.well_profiles = self.well_profiles.merge(pass_wells, on=groupby_cols, how='inner')
 
-            removed = qc_decisions[~qc_decisions['qc_pass']]
+            removed = qc_decisions[~qc_decisions['qc_pass']].copy()
             if not removed.empty:
                 rm_path = self.output_dir / "tables" / "qc_removed_wells.parquet"
                 removed.to_parquet(rm_path, index=False)
@@ -579,6 +580,31 @@ class DNADamageProductionPipeline:
                 excluded_csv = self.output_dir / "tables" / "excluded_wells.csv"
                 removed.to_csv(excluded_csv, index=False)
                 output_files['excluded_wells'] = excluded_csv
+
+        # Always emit human-readable QC exclusion report
+        report_md = self.output_dir / "tables" / "qc_exclusion_report.md"
+        report_cols = [c for c in ["plate", "well", "genotype", "drug", "qc_fail_reasons", "qc_warning_reasons"] if c in qc_decisions.columns]
+        with open(report_md, "w", encoding="utf-8") as f:
+            f.write("# QC Exclusion Report\n\n")
+            f.write(f"- Total wells evaluated: {len(qc_decisions)}\n")
+            if "qc_pass" in qc_decisions.columns:
+                n_pass = int(qc_decisions["qc_pass"].sum())
+                n_fail = int((~qc_decisions["qc_pass"]).sum())
+                f.write(f"- Wells passing QC: {n_pass}\n")
+                f.write(f"- Wells excluded by QC: {n_fail}\n\n")
+            else:
+                f.write("- `qc_pass` column not available in QC table.\n\n")
+
+            if removed.empty:
+                f.write("## Excluded wells\n\nNo wells were excluded.\n")
+            else:
+                f.write("## Excluded wells\n\n")
+                f.write("The following wells were excluded and why:\n\n")
+                f.write("| " + " | ".join(report_cols) + " |\n")
+                f.write("|" + "|".join(["---"] * len(report_cols)) + "|\n")
+                for row in removed[report_cols].fillna("").itertuples(index=False):
+                    f.write("| " + " | ".join(str(x) for x in row) + " |\n")
+        output_files["qc_exclusion_report"] = report_md
 
         n_after = len(self.well_profiles)
         self._log_step(step, f"Kept {n_after}/{n_before} wells after QC")

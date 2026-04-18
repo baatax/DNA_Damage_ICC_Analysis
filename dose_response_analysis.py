@@ -408,10 +408,17 @@ class DoseResponseAnalyzer:
                 
                 # Build result row
                 row = dict(zip(groupby, name))
+                positive_doses = group.loc[group[self.dose_column] > 0, self.dose_column]
+                max_tested_dose_um = positive_doses.max() if not positive_doses.empty else np.nan
+                ec50_pct_max = np.nan
+                if pd.notna(max_tested_dose_um) and max_tested_dose_um > 0 and fit.ec50 is not None:
+                    ec50_pct_max = (fit.ec50 / max_tested_dose_um) * 100.0
                 row.update({
                     'response_column': response_column,
                     'n_points': len(fit.doses) if fit.doses is not None else 0,
                     'ec50': fit.ec50,
+                    'max_tested_dose_um': max_tested_dose_um,
+                    'ec50_pct_max': ec50_pct_max,
                     'log10_ec50': fit.log10_ec50,
                     'hill_slope': fit.hill_slope,
                     'bottom': fit.bottom,
@@ -441,11 +448,18 @@ class DoseResponseAnalyzer:
                 weights=weights,
                 control_response=control_mean,
             )
+            positive_doses = df.loc[df[self.dose_column] > 0, self.dose_column]
+            max_tested_dose_um = positive_doses.max() if not positive_doses.empty else np.nan
+            ec50_pct_max = np.nan
+            if pd.notna(max_tested_dose_um) and max_tested_dose_um > 0 and fit.ec50 is not None:
+                ec50_pct_max = (fit.ec50 / max_tested_dose_um) * 100.0
             
             results.append({
                 'response_column': response_column,
                 'n_points': len(fit.doses) if fit.doses is not None else 0,
                 'ec50': fit.ec50,
+                'max_tested_dose_um': max_tested_dose_um,
+                'ec50_pct_max': ec50_pct_max,
                 'log10_ec50': fit.log10_ec50,
                 'hill_slope': fit.hill_slope,
                 'bottom': fit.bottom,
