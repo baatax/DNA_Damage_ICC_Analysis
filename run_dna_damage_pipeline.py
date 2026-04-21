@@ -909,17 +909,31 @@ class DNADamageProductionPipeline:
             profiles.drop(columns=['_sample_label'], inplace=True)
 
         # --- EC50-focused PCA ------------------------------------------------
+        # Pick the single dose closest to the configured EC50 (in log-space)
+        # per (genotype, drug), so each group contributes only its EC50-matched
+        # replicate wells rather than every dose inside a ±window.
         ec50_rows = pd.DataFrame()
-        for geno_name, geno_cfg in self.config.genotypes.items():
-            for drug_name, drug_cfg in geno_cfg.drugs.items():
-                if drug_cfg.ec50_um is not None:
-                    mask = (
-                        (profiles.get('genotype') == geno_name) &
-                        (profiles.get('drug') == drug_name) &
-                        (profiles.get('dilut_um', pd.Series(dtype=float)).between(
-                            drug_cfg.ec50_um * 0.5, drug_cfg.ec50_um * 2.0))
+        if 'dilut_um' in profiles.columns:
+            for geno_name, geno_cfg in self.config.genotypes.items():
+                for drug_name, drug_cfg in geno_cfg.drugs.items():
+                    if drug_cfg.ec50_um is None:
+                        continue
+                    group = profiles[
+                        (profiles.get('genotype') == geno_name)
+                        & (profiles.get('drug') == drug_name)
+                        & (profiles['dilut_um'] > 0)
+                        & profiles['dilut_um'].notna()
+                    ]
+                    if group.empty:
+                        continue
+                    available_doses = group['dilut_um'].unique()
+                    closest_dose = min(
+                        available_doses,
+                        key=lambda d: abs(np.log10(d) - np.log10(drug_cfg.ec50_um)),
                     )
-                    ec50_rows = pd.concat([ec50_rows, profiles[mask]])
+                    ec50_rows = pd.concat(
+                        [ec50_rows, group[group['dilut_um'] == closest_dose]]
+                    )
 
         if len(ec50_rows) >= 3 and len(selected) >= 2:
             ec50_dir = var_dir / "plots" / "ec50_focused"
