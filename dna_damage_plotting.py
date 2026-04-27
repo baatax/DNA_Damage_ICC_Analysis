@@ -774,7 +774,12 @@ class PlotGenerator:
         if pca_result is None:
             return []
         scores_df, load_df, var_map = pca_result
-        merged = pd.concat([df.reset_index(drop=True), scores_df.reset_index(drop=True)], axis=1)
+        # ec50/dmso source CSVs can already contain global PCA columns ("PC1", "PC2")
+        # from the upstream variant embedding. Drop those before attaching the
+        # subset-specific PCA scores so downstream plotting always uses the
+        # intended EC50/DMSO PCA coordinates once per sample.
+        base_df = df.drop(columns=[c for c in ["PC1", "PC2"] if c in df.columns], errors="ignore")
+        merged = pd.concat([base_df.reset_index(drop=True), scores_df.reset_index(drop=True)], axis=1)
         out: list[Path] = []
         subdir = "ec50_focused" if prefix == "ec50" else "dmso_controls"
 

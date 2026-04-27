@@ -4,11 +4,50 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from demo_dna_damage_pipeline import generate_synthetic_dna_damage_data
+from dna_damage_plotting import PlotGenerator
 from run_dna_damage_pipeline import DNADamageProductionPipeline
 
 
 class PlotGenerationSmokeTest(unittest.TestCase):
+    def test_ec50_plotting_replaces_preexisting_pc_columns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir)
+            csv_path = out_root / "uncorrected" / "plots" / "ec50_focused" / "ec50_profiles_uncorrected.csv"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Include pre-existing PC1/PC2 columns that should be ignored by
+            # the EC50-focused re-embedding code path.
+            df = pd.DataFrame(
+                {
+                    "genotype": ["WT", "WT", "KO", "KO"],
+                    "PC1": [100, 101, -100, -101],
+                    "PC2": [50, 51, -50, -51],
+                    "feat_a": [1.0, 1.2, 3.4, 3.7],
+                    "feat_b": [2.0, 2.1, 4.2, 4.5],
+                    "dilut_um": [0.1, 0.1, 0.1, 0.1],
+                }
+            )
+            df.to_csv(csv_path, index=False)
+
+            plotter = PlotGenerator(out_root)
+            results = plotter.generate_for_csv(csv_path)
+
+            self.assertTrue(results.plot_paths, "EC50 plotting did not generate output plots")
+
+            # The merged dataframe used for plotting should not keep duplicated
+            # PC columns, otherwise matplotlib receives two x/y arrays and plots
+            # 2x points at mismatched coordinates.
+            pca_result = plotter._compute_pca(df, ["feat_a", "feat_b"])
+            self.assertIsNotNone(pca_result)
+            scores_df, _, _ = pca_result
+            base_df = df.drop(columns=[c for c in ["PC1", "PC2"] if c in df.columns], errors="ignore")
+            merged = pd.concat([base_df.reset_index(drop=True), scores_df.reset_index(drop=True)], axis=1)
+            self.assertEqual(list(merged.columns).count("PC1"), 1)
+            self.assertEqual(list(merged.columns).count("PC2"), 1)
+
     def test_pipeline_generates_required_plots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
