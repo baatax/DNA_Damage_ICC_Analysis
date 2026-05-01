@@ -49,19 +49,7 @@
           }
         }
       },
-      "2KO-NV": {
-        "description": "Knockout NV condition",
-        "drugs": {
-          "Talazoparib": {
-            "path": "/cluster/tufts/levinlab/adebaa01/DATASETS_DNA_Damage_Panel/20260204_2KO-NV-DDP-1D-7K-TZ/Cellpaint_CPSAM/single_cell_features_numeric.parquet",
-            "ec50_um": 0.01,
-            "max_dose": "",
-            "moa": "PARP inhibitor",
-            "dilution_factor": 3,
-            "notes": "Inferred from folder name only"
-          }
-        }
-      },
+
       "1KO-P1": {
         "description": "Knockout P1 condition",
         "drugs": {
@@ -105,7 +93,7 @@
         "description": "Knockout P1 condition with CTRL label",
         "drugs": {
           "Talazoparib": {
-            "path": "/cluster/tufts/levinlab/adebaa01/DATASETS_DNA_Damage_Panel/20260221_2KO-P1-CTRL-DDP-1D-7K-TZ/Cellpaint_CPSAM/single_cell_features_numeric.parquet",
+            "path": "/cluster/tufts/levinlab/adebaa01/DATASETS_DNA_Damage_Panel/20260422_2KO-P1-CTRL-DDP-1D-7K-TZ/Cellpaint_CPSAM/single_cell_features_numeric.parquet",
             "ec50_um": 1,
             "max_dose": "",
             "moa": "PARP inhibitor",

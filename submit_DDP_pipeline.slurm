@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=talazoparib_dna_damage
 #SBATCH --partition=batch
-#SBATCH --time=6:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output/slurm_%j.out
@@ -23,7 +23,7 @@
 # ============================================================================
 
 # --- Configuration ---
-CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/Pilot_1_adapted_2KO.json"
+CONFIG_FILE="/cluster/tufts/levinlab/adebaa01/DNA_Damage_analysis/Pilot_1_WT_Comparison.json"
 OUTPUT_DIR="/cluster/tufts/levinlab/adebaa01/talazoparib_analysis_output"
 N_WORKERS=8
 
