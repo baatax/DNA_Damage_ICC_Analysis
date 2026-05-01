@@ -497,6 +497,25 @@ class PlotGenerator:
             ax.set_title(f"PCA by plate ({mode})")
             ax.legend(fontsize=6)
             out.append(self._save(fig, self.output_dir / "plots" / "qc" / f"pca_pc1_pc2_colored_by_plate_{mode}.png"))
+
+        # If source features are available, add per-PC top-loading dose response curves.
+        if "dilut_um" in df.columns:
+            feature_cols = [
+                c for c in df.select_dtypes(include=[np.number]).columns
+                if c not in {"PC1", "PC2", "dilut_um", "is_control"}
+            ]
+            pca_result = self._compute_pca(df, feature_cols)
+            if pca_result is not None:
+                _, load_df, _ = pca_result
+                out.extend(
+                    self._plot_top_loading_dose_response(
+                        df=df,
+                        load_df=load_df,
+                        mode=mode,
+                        subdir=mode,
+                        prefix="profiles_pca",
+                    )
+                )
         return out
 
     def _handle_pca_variance(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
@@ -805,6 +824,65 @@ class PlotGenerator:
             ax_l.barh(top.index.astype(str), top[pc], color=colors)
             ax_l.set_title(f"{prefix.upper()} top {pc} loadings ({mode})")
             out.append(self._save(fig_l, self.output_dir / "plots" / subdir / f"{prefix}_pca_loadings_{mode}_{pc.lower()}.png"))
+
+        out.extend(
+            self._plot_top_loading_dose_response(
+                df=merged,
+                load_df=load_df,
+                mode=mode,
+                subdir=subdir,
+                prefix=f"{prefix}_pca",
+            )
+        )
+        return out
+
+    def _plot_top_loading_dose_response(
+        self,
+        df: pd.DataFrame,
+        load_df: pd.DataFrame,
+        mode: str,
+        subdir: str,
+        prefix: str,
+    ) -> list[Path]:
+        """Plot dose curves for top-3 absolute loading features per PC."""
+        if "dilut_um" not in df.columns:
+            return []
+        out: list[Path] = []
+        gcols = [c for c in ["genotype", "drug"] if c in df.columns]
+        for pc in [c for c in ["PC1", "PC2"] if c in load_df.columns]:
+            top_features = (
+                load_df.assign(abs_loading=load_df[pc].abs())
+                .nlargest(3, "abs_loading")
+                .index.astype(str)
+                .tolist()
+            )
+            top_features = [f for f in top_features if f in df.columns]
+            if not top_features:
+                continue
+            fig, axes = plt.subplots(1, len(top_features), figsize=(6 * len(top_features), 4.5), squeeze=False)
+            for idx, feature in enumerate(top_features):
+                ax = axes[0, idx]
+                use = df[gcols + ["dilut_um", feature]].dropna()
+                if use.empty:
+                    ax.set_axis_off()
+                    continue
+                agg = use.groupby(gcols + ["dilut_um"], as_index=False)[feature].median() if gcols else use.groupby(["dilut_um"], as_index=False)[feature].median()
+                if gcols:
+                    for name, sub in agg.groupby(gcols):
+                        label = name if isinstance(name, str) else " | ".join(map(str, name))
+                        sub = sub.sort_values("dilut_um")
+                        ax.plot(sub["dilut_um"], sub[feature], marker="o", label=label)
+                    ax.legend(fontsize=7)
+                else:
+                    sub = agg.sort_values("dilut_um")
+                    ax.plot(sub["dilut_um"], sub[feature], marker="o")
+                if (agg["dilut_um"] > 0).any():
+                    ax.set_xscale("symlog", linthresh=1e-6)
+                ax.set_xlabel("drug concentration (uM; DMSO=0)")
+                ax.set_ylabel(feature)
+                ax.set_title(f"{pc} top feature dose response\n{feature}")
+            fig.suptitle(f"{prefix}: top-3 loading feature dose response ({mode})", fontsize=11)
+            out.append(self._save(fig, self.output_dir / "plots" / subdir / f"{prefix}_top3_features_dose_response_{mode}_{pc.lower()}.png"))
         return out
 
     def _fallback_generic(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:

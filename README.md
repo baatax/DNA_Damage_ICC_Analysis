@@ -158,6 +158,15 @@ output_dir/
 
 QC tables also include `tables/qc_exclusion_report.md`, a human-readable list of excluded wells/samples with fail reasons.
 
+### PCA + dose-response visualization behavior
+
+- Every PCA context now emits:
+  - PC1/PC2 scatter plots,
+  - per-PC loading bar plots,
+  - **top-3 loading feature dose-response curves for each PC**.
+- Dose-response panels are drawn against `dilut_um` and include `0` concentration (DMSO/vehicle) as the lowest point in the dilution series.
+- EC50-focused and DMSO-focused PCA outputs both include these top-feature dose-response panels so DMSO controls are directly integrated with concentration series interpretation.
+
 ## Experimental Unit and Statistical Design
 
 - **Primary replication unit:** well-level summary values.
