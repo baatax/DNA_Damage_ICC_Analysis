@@ -218,6 +218,8 @@ Dose-response fit tables additionally include:
 - **Dose-specific effects:** permutation or rank-based tests on well-level effects with stratification when needed.
 - Effect size reporting (e.g., Cliff's delta or Hedges' g) with confidence intervals.
 - Multiple testing correction (FDR recommended for discovery workflows).
+- **EC50-neighborhood validation:** for each genotype/drug group, the pipeline now performs genotype comparisons at the nearest lower, nearest EC50-matched, and nearest higher tested concentrations; if EC50 is already at the highest tested concentration, the higher comparison uses the EC50 dose itself.
+- **Combined 3-dose EC50-band analysis:** the same lower/EC50/higher concentration band is emitted as separate analysis groups for additional comparison outputs.
 
 ### Normalization
 
