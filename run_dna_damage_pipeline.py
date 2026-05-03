@@ -1094,7 +1094,78 @@ class DNADamageProductionPipeline:
             except Exception:
                 continue
 
+        # EC50-neighborhood comparisons:
+        # (1) one lower + EC50 + one higher concentration around configured EC50
+        # (2) combined analysis treating those 3 concentrations as separate groups
+        ec50_neighbor_rows = self._collect_ec50_neighbor_rows(profiles)
+        if not ec50_neighbor_rows.empty:
+            neigh_path = tables_dir / "ec50_neighbor_profiles.csv"
+            ec50_neighbor_rows.to_csv(neigh_path, index=False)
+            output_files[f'{variant}/ec50_neighbor_profiles'] = neigh_path
+
+            for col in effect_cols[:5]:
+                if col not in ec50_neighbor_rows.columns:
+                    continue
+                try:
+                    comp = self.statistical_comparator.compare_responses_at_dose(
+                        ec50_neighbor_rows, col, dose_col='dilut_um', groupby='genotype', drug_col='drug',
+                    )
+                    if not comp.empty:
+                        out = tables_dir / f"genotype_comparison_ec50_neighbors_{col}.csv"
+                        comp.to_csv(out, index=False)
+                        output_files[f'{variant}/genotype_comparison_ec50_neighbors_{col}'] = out
+                except Exception:
+                    continue
+
+                try:
+                    combined = self.statistical_comparator.compare_responses_at_dose(
+                        ec50_neighbor_rows, col, dose_col='ec50_band_dose_um',
+                        groupby='genotype', drug_col='ec50_band_group',
+                    )
+                    if not combined.empty:
+                        out = tables_dir / f"genotype_comparison_ec50_band_groups_{col}.csv"
+                        combined.to_csv(out, index=False)
+                        output_files[f'{variant}/genotype_comparison_ec50_band_groups_{col}'] = out
+                except Exception:
+                    continue
+
         return output_files
+
+    def _collect_ec50_neighbor_rows(self, profiles: pd.DataFrame) -> pd.DataFrame:
+        """Collect rows at lower/closest/higher doses around configured EC50 per genotype/drug."""
+        if 'dilut_um' not in profiles.columns:
+            return pd.DataFrame()
+
+        slices: List[pd.DataFrame] = []
+        for geno_name, geno_cfg in self.config.genotypes.items():
+            for drug_name, drug_cfg in geno_cfg.drugs.items():
+                if drug_cfg.ec50_um is None:
+                    continue
+                group = profiles[
+                    (profiles.get('genotype') == geno_name)
+                    & (profiles.get('drug') == drug_name)
+                    & (profiles['dilut_um'] > 0)
+                    & profiles['dilut_um'].notna()
+                ].copy()
+                if group.empty:
+                    continue
+                doses = np.array(sorted(group['dilut_um'].unique()), dtype=float)
+                center_idx = int(np.argmin(np.abs(np.log10(doses) - np.log10(drug_cfg.ec50_um))))
+                lower_idx = max(0, center_idx - 1)
+                higher_idx = min(len(doses) - 1, center_idx + 1)
+                band_indices = [("lower", lower_idx), ("ec50", center_idx), ("higher", higher_idx)]
+                for band, idx in band_indices:
+                    dose = doses[idx]
+                    block = group[group['dilut_um'] == dose].copy()
+                    block['ec50_band'] = band
+                    block['ec50_band_dose_um'] = dose
+                    block['ec50_band_group'] = f"{geno_name}|{drug_name}|{band}"
+                    block['configured_ec50_um'] = drug_cfg.ec50_um
+                    slices.append(block)
+
+        if not slices:
+            return pd.DataFrame()
+        return pd.concat(slices, ignore_index=True)
 
     # ------------------------------------------------------------------
     # Plotting
