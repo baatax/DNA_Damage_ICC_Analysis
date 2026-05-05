@@ -211,9 +211,9 @@ Dose-response fit tables additionally include:
 - `max_tested_dose_um`: highest non-control concentration observed per fit group.
 - `ec50_pct_max`: EC50 represented as percentage of that max tested concentration.
 
-All loaded datasets are validated against the expected dilution ladder:
-`100uM, 33.333uM, 11.111uM, ...` (9 non-control 1:3 dilutions) plus DMSO control.
-When raw labels are inconsistent, loader-side relabeling is applied and revalidated.
+All loaded datasets are validated against a 9-point dilution ladder anchored to each drug's configured `max_dose`
+(default `100uM`) and `dilution_factor` (default `3.0`) plus DMSO control.
+When raw labels are inconsistent, loader-side relabeling is applied using those same per-drug settings and then revalidated.
 
 ### Statistical Comparisons
 
