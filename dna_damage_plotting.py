@@ -349,6 +349,9 @@ class PlotGenerator:
             return "sytogreen"
         if "dapi" in feat:
             return "dapi"
+        match = re.search(r"(?:^|_)w([1-4])(?:_|$)", feat)
+        if match:
+            return {"1": "dapi", "2": "h2ax", "3": "ki67", "4": "sytogreen"}.get(match.group(1), "other")
         return "other"
 
     def _channel_color(self, feature: str) -> str:
@@ -787,7 +790,7 @@ class PlotGenerator:
         mode = self._mode_from_path(csv_path)
         feature_cols = [
             c for c in df.select_dtypes(include=[np.number]).columns
-            if c not in {"PC1", "PC2", "dilut_um", "is_control"} and not c.endswith(("_median", "_mad"))
+            if c not in {"dilut_um", "is_control"} and not c.endswith(("_median", "_mad")) and not re.fullmatch(r"PC\d+", str(c))
         ]
         pca_result = self._compute_pca(df, feature_cols)
         if pca_result is None:
@@ -825,9 +828,10 @@ class PlotGenerator:
             ax_l.set_title(f"{prefix.upper()} top {pc} loadings ({mode})")
             out.append(self._save(fig_l, self.output_dir / "plots" / subdir / f"{prefix}_pca_loadings_{mode}_{pc.lower()}.png"))
 
+        dose_df = self._resolve_dose_response_source_df(mode=mode, fallback_df=merged) if prefix == "ec50" else merged
         out.extend(
             self._plot_top_loading_dose_response(
-                df=merged,
+                df=dose_df,
                 load_df=load_df,
                 mode=mode,
                 subdir=subdir,
@@ -836,6 +840,15 @@ class PlotGenerator:
         )
         return out
 
+
+
+    def _resolve_dose_response_source_df(self, mode: str, fallback_df: pd.DataFrame) -> pd.DataFrame:
+        """For EC50 PCA top-feature plots, use full-dose profiles when available."""
+        profiles_csv = self.output_dir / mode / "plots" / "embedding" / f"profiles_pca_{mode}.csv"
+        if not profiles_csv.exists():
+            return fallback_df
+        full_df = self._load_csv(profiles_csv)
+        return full_df if not full_df.empty else fallback_df
     def _plot_top_loading_dose_response(
         self,
         df: pd.DataFrame,
