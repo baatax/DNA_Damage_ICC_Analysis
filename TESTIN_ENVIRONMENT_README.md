@@ -42,7 +42,7 @@ After an integration run, validate these tables are produced under `tables/`:
 - test-dataset generation from config
 - plotting smoke test (including PCA/loadings/EC50-DMSO plotting paths)
 - dose-response outputs and QC report generation
-- strict 9-point 1:3 dilution enforcement anchored at 100uM with DMSO control
+- strict 9-point dilution enforcement anchored at per-drug `max_dose` (default 100uM) using configured `dilution_factor`, with DMSO control
 - crowding-correlation binned feature-count plot by channel
 
 

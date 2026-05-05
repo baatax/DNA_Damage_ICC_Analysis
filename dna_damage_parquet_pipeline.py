@@ -497,27 +497,32 @@ class DNADamageDataLoader:
                 df['dilution_level'] = dilution_level
                 df['is_control'] = df['raw_dilut_string'].str.upper() == self.config.control_label.upper()
 
+            configured_max_dose_um = parse_dilution_string(drug_config.max_dose) if drug_config.max_dose else 100.0
+            if pd.isna(configured_max_dose_um) or configured_max_dose_um <= 0:
+                configured_max_dose_um = 100.0
+            configured_dilution_factor = drug_config.dilution_factor if drug_config.dilution_factor > 0 else 3.0
+
             try:
                 validate_standard_dilution_scheme(
                     df.loc[~df['is_control'], 'dilut_um'],
-                    max_dose_um=100.0,
-                    dilution_factor=3.0,
+                    max_dose_um=configured_max_dose_um,
+                    dilution_factor=configured_dilution_factor,
                     n_dilutions=9,
                 )
             except ValueError:
                 corrected_label, corrected_um, dilution_level = relabel_pseudo_dilution_series(
                     raw_labels=df['raw_dilut_string'],
                     control_label=self.config.control_label,
-                    max_dose="100uM",
-                    dilution_factor=3.0,
+                    max_dose=drug_config.max_dose or "100uM",
+                    dilution_factor=configured_dilution_factor,
                 )
                 df['dilut_string'] = corrected_label
                 df['dilut_um'] = corrected_um
                 df['dilution_level'] = dilution_level
                 validate_standard_dilution_scheme(
                     df.loc[~df['is_control'], 'dilut_um'],
-                    max_dose_um=100.0,
-                    dilution_factor=3.0,
+                    max_dose_um=configured_max_dose_um,
+                    dilution_factor=configured_dilution_factor,
                     n_dilutions=9,
                 )
         
