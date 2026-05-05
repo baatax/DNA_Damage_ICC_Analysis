@@ -318,3 +318,11 @@ python analyze_profiles.py \
   --dose_col Dilut
 ```
 
+
+
+## Output layout (2026 update)
+- `crowding_analysis/`: crowding tables and crowding plots.
+- `crowding_corrected_analysis/`: mirrored `tables/`, `plots/`, `models/` from `crowding_corrected/`.
+- `uncorrected_analysis/`: mirrored `tables/`, `plots/`, `models/` from `uncorrected/`.
+- Per-drug PCA export folder is removed.
+- Dilution enforcement: all datasets are validated against 9 non-control 1:3 dilutions starting at 100uM plus DMSO control.

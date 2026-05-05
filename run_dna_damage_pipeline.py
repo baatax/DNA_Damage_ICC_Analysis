@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -297,7 +298,6 @@ class DNADamageProductionPipeline:
                 self.output_dir / variant / "plots" / "clustering",
                 self.output_dir / variant / "plots" / "ec50_focused",
                 self.output_dir / variant / "plots" / "dmso_controls",
-                self.output_dir / variant / "plots" / "per_drug",
                 self.output_dir / variant / "plots" / "dose_response",
             ])
         for d in dirs:
@@ -367,6 +367,7 @@ class DNADamageProductionPipeline:
 
             # Generate plots from CSV outputs
             output_files.update(self._step_generate_plots(output_files))
+            output_files.update(self._step_organize_output_structure())
 
             # Save manifest
             self._save_manifest(output_files)
@@ -954,17 +955,6 @@ class DNADamageProductionPipeline:
                 with open(ctrl_dir / "selection_summary.json", 'w') as f:
                     json.dump(summary_info, f, indent=2)
 
-        # --- Per-drug PCA ----------------------------------------------------
-        if 'drug' in profiles.columns:
-            for drug, drug_df in profiles.groupby('drug'):
-                if len(drug_df) < 3:
-                    continue
-                drug_safe = str(drug).replace("/", "_").replace("\\", "_")
-                drug_dir = var_dir / "plots" / "per_drug"
-                drug_csv = drug_dir / f"profiles_{drug_safe}_{variant}.csv"
-                drug_df.to_csv(drug_csv, index=False)
-                output_files[f'{variant}/per_drug_{drug_safe}'] = drug_csv
-
         # --- Dose-response modeling ------------------------------------------
         output_files.update(self._variant_dose_response(profiles, avail_feat, variant))
 
@@ -1204,6 +1194,33 @@ class DNADamageProductionPipeline:
         self.checkpoint.mark_complete(step)
 
         return plot_files
+
+    def _step_organize_output_structure(self) -> Dict[str, Path]:
+        """Create user-facing analysis folder layout."""
+        organized: Dict[str, Path] = {}
+        crowding_root = self.output_dir / "crowding_analysis"
+        corrected_root = self.output_dir / "crowding_corrected_analysis"
+        uncorrected_root = self.output_dir / "uncorrected_analysis"
+        for path in (crowding_root, corrected_root, uncorrected_root):
+            path.mkdir(parents=True, exist_ok=True)
+
+        src_crowding = self.output_dir / "crowding"
+        src_crowding_plots = self.output_dir / "plots" / "crowding"
+        if src_crowding.exists():
+            shutil.copytree(src_crowding, crowding_root / "tables", dirs_exist_ok=True)
+        if src_crowding_plots.exists():
+            shutil.copytree(src_crowding_plots, crowding_root / "plots", dirs_exist_ok=True)
+
+        for variant, target in (("crowding_corrected", corrected_root), ("uncorrected", uncorrected_root)):
+            shutil.copytree(self.output_dir / variant / "tables", target / "tables", dirs_exist_ok=True)
+            shutil.copytree(self.output_dir / variant / "plots", target / "plots", dirs_exist_ok=True)
+            model_dir = self.output_dir / variant / "models"
+            if model_dir.exists():
+                shutil.copytree(model_dir, target / "models", dirs_exist_ok=True)
+        organized["crowding_analysis"] = crowding_root
+        organized["crowding_corrected_analysis"] = corrected_root
+        organized["uncorrected_analysis"] = uncorrected_root
+        return organized
 
     @staticmethod
     def _compute_control_relative_effects(
