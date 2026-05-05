@@ -124,10 +124,12 @@ class PlotGenerationSmokeTest(unittest.TestCase):
                 "No PCA embedding or dose-response plots generated",
             )
 
+            # EC50 fit-specific scatter plots were intentionally removed; EC50 values
+            # are now shown in an on-plot table in summary dose-response figures.
             pct_max_plots = list(dr_dir.glob("*_ec50_pct_max.png"))
             pct_max_log_plots = list(dr_dir.glob("*_log10_ec50_pct_max.png"))
-            self.assertTrue(pct_max_plots, "No EC50 % max concentration plots generated")
-            self.assertTrue(pct_max_log_plots, "No log10 EC50 % max concentration plots generated")
+            self.assertFalse(pct_max_plots, "Deprecated EC50 % max concentration plots should not be generated")
+            self.assertFalse(pct_max_log_plots, "Deprecated log10 EC50 % max concentration plots should not be generated")
 
 
 if __name__ == "__main__":
