@@ -407,6 +407,28 @@ def relabel_pseudo_dilution_series(
     return corrected_label, corrected_um, dilution_level
 
 
+def validate_standard_dilution_scheme(
+    doses_um: pd.Series,
+    max_dose_um: float = 100.0,
+    dilution_factor: float = 3.0,
+    n_dilutions: int = 9,
+    atol: float = 1e-6,
+) -> None:
+    """Validate that non-control doses follow the standard 1:3 dilution series."""
+    expected = np.array([max_dose_um / (dilution_factor ** i) for i in range(n_dilutions)], dtype=float)
+    observed = np.array(sorted(pd.to_numeric(doses_um, errors="coerce").dropna().unique(), reverse=True), dtype=float)
+    observed = observed[observed > 0]
+    if len(observed) != len(expected):
+        raise ValueError(
+            f"Invalid dilution scheme: expected {len(expected)} non-control doses, found {len(observed)}."
+        )
+    if not np.allclose(observed, expected, rtol=0.0, atol=atol):
+        raise ValueError(
+            "Invalid dilution scheme: observed non-control doses do not match "
+            "expected 100uM->... 1:3 series (9 dilutions)."
+        )
+
+
 def get_numeric_columns(df: pd.DataFrame, exclude: Optional[List[str]] = None) -> List[str]:
     """Get numeric column names, excluding specified columns."""
     exclude = exclude or []
@@ -474,6 +496,13 @@ class DNADamageDataLoader:
                 df['dilut_um'] = corrected_um
                 df['dilution_level'] = dilution_level
                 df['is_control'] = df['raw_dilut_string'].str.upper() == self.config.control_label.upper()
+
+            validate_standard_dilution_scheme(
+                df.loc[~df['is_control'], 'dilut_um'],
+                max_dose_um=100.0,
+                dilution_factor=3.0,
+                n_dilutions=9,
+            )
         
         # Add EC50 info
         if drug_config.ec50_um is not None:

@@ -60,7 +60,7 @@ class PlotGenerationSmokeTest(unittest.TestCase):
                 genotype="WT",
                 drug="Etoposide",
                 random_seed=7,
-                n_doses=5,
+                n_doses=9,
             )
             pq_path = parquet_dir / "WT_Etoposide.parquet"
             df.to_parquet(pq_path, index=False)
@@ -80,6 +80,7 @@ class PlotGenerationSmokeTest(unittest.TestCase):
                             "Etoposide": {
                                 "path": str(pq_path),
                                 "ec50_um": 1.5,
+                                "max_dose": "100uM",
                                 "moa": "Topoisomerase II inhibitor",
                             }
                         }
