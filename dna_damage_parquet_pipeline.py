@@ -497,12 +497,29 @@ class DNADamageDataLoader:
                 df['dilution_level'] = dilution_level
                 df['is_control'] = df['raw_dilut_string'].str.upper() == self.config.control_label.upper()
 
-            validate_standard_dilution_scheme(
-                df.loc[~df['is_control'], 'dilut_um'],
-                max_dose_um=100.0,
-                dilution_factor=3.0,
-                n_dilutions=9,
-            )
+            try:
+                validate_standard_dilution_scheme(
+                    df.loc[~df['is_control'], 'dilut_um'],
+                    max_dose_um=100.0,
+                    dilution_factor=3.0,
+                    n_dilutions=9,
+                )
+            except ValueError:
+                corrected_label, corrected_um, dilution_level = relabel_pseudo_dilution_series(
+                    raw_labels=df['raw_dilut_string'],
+                    control_label=self.config.control_label,
+                    max_dose="100uM",
+                    dilution_factor=3.0,
+                )
+                df['dilut_string'] = corrected_label
+                df['dilut_um'] = corrected_um
+                df['dilution_level'] = dilution_level
+                validate_standard_dilution_scheme(
+                    df.loc[~df['is_control'], 'dilut_um'],
+                    max_dose_um=100.0,
+                    dilution_factor=3.0,
+                    n_dilutions=9,
+                )
         
         # Add EC50 info
         if drug_config.ec50_um is not None:

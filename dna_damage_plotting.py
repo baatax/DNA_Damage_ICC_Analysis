@@ -74,7 +74,6 @@ class PlotGenerator:
             (lambda p: p.name.startswith("pca_variance_"), self._handle_pca_variance),
             (lambda p: p.name.startswith("pca_loadings_"), self._handle_pca_loadings),
             (lambda p: p.name == "dose_response_summary.csv", self._handle_dose_response_summary),
-            (lambda p: p.name == "dose_response_fits.csv", self._handle_dose_response_fits),
             (lambda p: p.name == "fold_change_vs_control.csv", self._handle_fold_change),
             (lambda p: p.name.startswith("ec50_bootstrap_"), self._handle_ec50_bootstrap),
             (lambda p: p.name.startswith("genotype_comparison_"), self._handle_genotype_comparison),
@@ -285,6 +284,29 @@ class PlotGenerator:
 
     def _handle_crowding(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         out: list[Path] = []
+        if {"feature", "correlation"}.issubset(df.columns):
+            corr_df = df.copy()
+            corr_df["channel"] = corr_df["feature"].astype(str).map(self._feature_channel)
+            bins = np.linspace(-1.0, 1.0, 21)
+            corr_df["corr_bin"] = pd.cut(corr_df["correlation"], bins=bins, include_lowest=True)
+            binned = corr_df.groupby(["corr_bin", "channel"], observed=False).size().reset_index(name="n_features")
+            pivot = binned.pivot(index="corr_bin", columns="channel", values="n_features").fillna(0)
+            if not pivot.empty:
+                fig, ax = plt.subplots(figsize=(10, 4.5))
+                bottoms = np.zeros(len(pivot))
+                x = np.arange(len(pivot))
+                for channel in pivot.columns:
+                    vals = pivot[channel].values
+                    ax.bar(x, vals, bottom=bottoms, label=channel, color=CHANNEL_COLORS.get(channel, "#7f7f7f"))
+                    bottoms += vals
+                ax.set_xticks(x)
+                ax.set_xticklabels([str(v) for v in pivot.index], rotation=45, ha="right", fontsize=7)
+                ax.set_xlabel("Correlation with crowding index (binned)")
+                ax.set_ylabel("Feature count")
+                ax.set_title("Feature counts by crowding-correlation bin and channel")
+                ax.legend(fontsize=8, title="Channel")
+                out.append(self._save(fig, self.output_dir / "plots" / "crowding" / "crowding_correlation_binned_by_channel.png"))
+
         df = self._as_numeric_dose(df)
         if "dilut_um" not in df.columns:
             return out
@@ -615,86 +637,36 @@ class PlotGenerator:
             ax.set_xlabel("dilut_um")
             ax.set_ylabel(resp)
             ax.set_title(f"Dose response summary: {resp}")
-            if gcols:
-                ax.legend(fontsize=7)
+            self._add_ec50_table(mode, resp.replace("_mean", ""), ax)
             out.append(self._save(fig, self.output_dir / "plots" / "dose_response" / f"dose_response_summary_{self._safe_name(resp)}.png"))
         return out
 
-    def _handle_dose_response_fits(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
-        if "ec50" not in df.columns:
-            return []
-        out: list[Path] = []
-        group_cols = [c for c in ["response_column", "drug", "genotype"] if c in df.columns]
-        if not group_cols:
-            group_cols = [df.columns[0]]
-        for response, sub in df.groupby("response_column") if "response_column" in df.columns else [("response", df)]:
-            p = sub.dropna(subset=["ec50"]).copy()
-            if p.empty:
-                continue
-            p = p.sort_values("ec50")
-            labels = [" | ".join(str(r.get(c, "")) for c in ["drug", "genotype"] if c in p.columns).strip(" |") for _, r in p.iterrows()]
-            x = np.arange(len(p))
-            y = p["ec50"].values
-            fig, ax = plt.subplots(figsize=(max(7, len(p) * 0.5), 4.5))
-            if {"ec50_ci_lower", "ec50_ci_upper"}.issubset(p.columns):
-                lower = y - p["ec50_ci_lower"].values
-                upper = p["ec50_ci_upper"].values - y
-                ax.errorbar(x, y, yerr=np.vstack([lower, upper]), fmt="o", capsize=4)
-            else:
-                ax.plot(x, y, "o")
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels, rotation=45, ha="right")
-            ax.set_ylabel("EC50 (µM)")
-            ax.set_title(f"Dose-response fits ({response})")
-            out.append(self._save(fig, self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_ec50.png"))
-            fig_log, ax_log = plt.subplots(figsize=(max(7, len(p) * 0.5), 4.5))
-            y_log = np.log10(y)
-            if {"ec50_ci_lower", "ec50_ci_upper"}.issubset(p.columns):
-                low_log = y_log - np.log10(np.clip(p["ec50_ci_lower"].values, 1e-12, None))
-                up_log = np.log10(np.clip(p["ec50_ci_upper"].values, 1e-12, None)) - y_log
-                ax_log.errorbar(x, y_log, yerr=np.vstack([low_log, up_log]), fmt="o", capsize=4)
-            else:
-                ax_log.plot(x, y_log, "o")
-            ax_log.set_xticks(x)
-            ax_log.set_xticklabels(labels, rotation=45, ha="right")
-            ax_log.set_ylabel("log10(EC50 [µM])")
-            ax_log.set_title(f"Dose-response fits log scale ({response})")
-            out.append(self._save(fig_log, self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_log10_ec50.png"))
+    def _add_ec50_table(self, mode: str, response_col: str, ax: plt.Axes) -> None:
+        fits_csv = self.output_dir / mode / "plots" / "dose_response" / "dose_response_fits.csv"
+        if not fits_csv.exists():
+            return
+        fits = self._load_csv(fits_csv)
+        if fits.empty or "response_column" not in fits.columns or "ec50" not in fits.columns:
+            return
+        sub = fits[fits["response_column"] == response_col].copy()
+        if sub.empty:
+            return
+        rows = []
+        for _, row in sub.iterrows():
+            label_parts = [str(row[c]) for c in ["drug", "genotype"] if c in sub.columns and pd.notna(row[c])]
+            label = " | ".join(label_parts) if label_parts else "group"
+            rows.append([label, f"{row['ec50']:.3g}" if pd.notna(row["ec50"]) else "nan"])
+        if not rows:
+            return
+        tbl = ax.table(
+            cellText=rows[:8],
+            colLabels=["Group", "EC50 (uM)"],
+            cellLoc="left",
+            bbox=[0.57, -0.45, 0.42, 0.35],
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(7)
 
-            if "ec50_pct_max" in p.columns:
-                p_pct = p.dropna(subset=["ec50_pct_max"]).copy()
-                p_pct = p_pct[p_pct["ec50_pct_max"] > 0]
-                if not p_pct.empty:
-                    labels_pct = [
-                        " | ".join(str(r.get(c, "")) for c in ["drug", "genotype"] if c in p_pct.columns).strip(" |")
-                        for _, r in p_pct.iterrows()
-                    ]
-                    x_pct = np.arange(len(p_pct))
-                    y_pct = p_pct["ec50_pct_max"].values
-
-                    fig_pct, ax_pct = plt.subplots(figsize=(max(7, len(p_pct) * 0.5), 4.5))
-                    ax_pct.plot(x_pct, y_pct, "o")
-                    ax_pct.set_xticks(x_pct)
-                    ax_pct.set_xticklabels(labels_pct, rotation=45, ha="right")
-                    ax_pct.set_ylabel("EC50 (% of max tested concentration)")
-                    ax_pct.set_title(f"Dose-response fits (% max conc, {response})")
-                    out.append(self._save(
-                        fig_pct,
-                        self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_ec50_pct_max.png",
-                    ))
-
-                    fig_pct_log, ax_pct_log = plt.subplots(figsize=(max(7, len(p_pct) * 0.5), 4.5))
-                    y_pct_log = np.log10(y_pct)
-                    ax_pct_log.plot(x_pct, y_pct_log, "o")
-                    ax_pct_log.set_xticks(x_pct)
-                    ax_pct_log.set_xticklabels(labels_pct, rotation=45, ha="right")
-                    ax_pct_log.set_ylabel("log10(EC50 [% max tested concentration])")
-                    ax_pct_log.set_title(f"Dose-response fits log scale (% max conc, {response})")
-                    out.append(self._save(
-                        fig_pct_log,
-                        self.output_dir / "plots" / "dose_response" / f"dose_response_fits_{self._safe_name(response)}_log10_ec50_pct_max.png",
-                    ))
-        return out
 
     def _handle_fold_change(self, csv_path: Path, df: pd.DataFrame) -> list[Path]:
         df = self._as_numeric_dose(df)

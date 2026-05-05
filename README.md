@@ -144,16 +144,14 @@ Controls keep the configured `control_label` and `dilut_um = 0`.
 
 ```
 output_dir/
-├── per_genotype/      # Per-genotype normalized data
-├── across_all/        # Across-all-genotypes normalized data
-├── per_well/          # Well-level aggregated profiles
-├── crowding/          # Cell crowding/density metrics
-├── qc/               # Quality control reports
-├── pca/              # PCA coordinates and loadings
-├── dose_response/    # Fitted dose-response curves (Hill equation)
-├── statistics/       # Genotype comparison results
-├── cache/            # Checkpoint data for resume
-└── manifest.json     # Pipeline metadata and file inventory
+├── crowding_analysis/             # Crowding tables + crowding plots
+├── crowding_corrected_analysis/   # Full corrected analysis (tables/plots/models)
+├── uncorrected_analysis/          # Full uncorrected analysis (tables/plots/models)
+├── crowding/                      # Internal crowding computation artifacts
+├── uncorrected/                   # Internal uncorrected artifacts
+├── crowding_corrected/            # Internal corrected artifacts
+├── cache/                         # Checkpoint data for resume
+└── manifest.json                  # Pipeline metadata and file inventory
 ```
 
 QC tables also include `tables/qc_exclusion_report.md`, a human-readable list of excluded wells/samples with fail reasons.
@@ -212,6 +210,10 @@ Returns EC50, Hill slope, confidence intervals, RMSE, AIC, model choice, and con
 Dose-response fit tables additionally include:
 - `max_tested_dose_um`: highest non-control concentration observed per fit group.
 - `ec50_pct_max`: EC50 represented as percentage of that max tested concentration.
+
+All loaded datasets are validated against the expected dilution ladder:
+`100uM, 33.333uM, 11.111uM, ...` (9 non-control 1:3 dilutions) plus DMSO control.
+When raw labels are inconsistent, loader-side relabeling is applied and revalidated.
 
 ### Statistical Comparisons
 
