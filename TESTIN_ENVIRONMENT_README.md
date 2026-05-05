@@ -42,3 +42,10 @@ After an integration run, validate these tables are produced under `tables/`:
 - test-dataset generation from config
 - plotting smoke test (including PCA/loadings/EC50-DMSO plotting paths)
 - dose-response outputs and QC report generation
+
+
+## Notes on recent plotting checks
+
+- Verify that `ec50_pca_top3_features_dose_response_*` plots show the full concentration ladder, not only EC50-selected wells.
+- Channel-color labeling in loading plots now recognizes explicit channel names (`dapi`, `ki67`, `h2ax`, `sytogreen`) and `w1`-`w4` tokens when present in feature names.
+- PCA input feature selection excludes any pre-existing `PCn` columns to avoid recursive/invalid loadings (for example `PC4` appearing as a loading feature).

@@ -166,6 +166,7 @@ QC tables also include `tables/qc_exclusion_report.md`, a human-readable list of
   - **top-3 loading feature dose-response curves for each PC**.
 - Dose-response panels are drawn against `dilut_um` and include `0` concentration (DMSO/vehicle) as the lowest point in the dilution series.
 - EC50-focused and DMSO-focused PCA outputs both include these top-feature dose-response panels so DMSO controls are directly integrated with concentration series interpretation.
+- For **EC50-focused PCA**, top-3 loading feature dose-response panels are now plotted from the full variant concentration series (all tested doses) while still deriving feature selection from EC50-focused PCA loadings.
 
 ## Experimental Unit and Statistical Design
 
