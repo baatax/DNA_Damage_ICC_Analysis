@@ -26,8 +26,7 @@ For each configured analysis run, the pipeline executes:
     - correlation-distance heatmaps
     - EC50-only subset PCA + distance heatmap
     - DMSO control-only PCA + distance heatmap
-    - per-drug PCA
-    - dose-response fitting + dose-response plots
+        - dose-response fitting + dose-response plots
 
 The same general pipeline is applied to all configured run names, and run-level results are collected in `run_manifest.json`.
 
@@ -203,10 +202,7 @@ Inside `<run_name>/<variant_name>/`:
    - Writes `plots/dmso_controls/selection_summary.json`.
    - Runs control-only PCA/loadings and control distance heatmap when feasible.
 
-8. **Per-drug PCA**
-   - Runs PCA separately for each compound with enough rows.
-
-9. **Dose-response modeling**
+8. **Dose-response modeling**
    - Builds plate/global control reference profiles.
    - Computes delta features (`delta_*`) from control.
    - Computes:
@@ -326,3 +322,20 @@ python analyze_profiles.py \
 - `uncorrected_analysis/`: mirrored `tables/`, `plots/`, `models/` from `uncorrected/`.
 - Per-drug PCA export folder is removed.
 - Dilution enforcement: all datasets are validated against 9 non-control 1:3 dilutions starting at 100uM plus DMSO control.
+
+
+## 7) User-facing output folder structure
+
+At the end of each run, the pipeline creates these top-level folders inside the run output directory:
+
+- `crowding_analysis/`
+  - `tables/` crowding correlation/exclusion tables
+  - `plots/` crowding plots including binned correlation-by-channel bar chart
+- `crowding_corrected_analysis/`
+  - full corrected `tables/`, `plots/`, and `models/`
+  - includes `plots/dmso_controls/` and `plots/ec50_focused/` PCA, loading, and top-feature dose-response plots
+- `uncorrected_analysis/`
+  - full uncorrected `tables/`, `plots/`, and `models/`
+  - includes `plots/dmso_controls/` and `plots/ec50_focused/` PCA, loading, and top-feature dose-response plots
+
+Within each variant, dose-response plotting keeps summary/fold-change outputs and EC50 tables on summary panels, and excludes separate fit-curve image generation.

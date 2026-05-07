@@ -511,6 +511,35 @@ class PlotGenerator:
         ax.set_title(f"PCA profiles ({mode})")
         out.append(self._save(fig, plot_dir / f"profiles_pca_{mode}_pc1_pc2.png"))
 
+        # profiles scatter colored by group; include QC-excluded wells with alternate marker
+        group_cols = [c for c in ["genotype", "drug"] if c in df.columns]
+        if group_cols and {"plate", "well"}.issubset(df.columns):
+            fig_g, ax_g = plt.subplots(figsize=(7, 5.5))
+            excluded_pairs: set[tuple[str, str]] = set()
+            excluded_csv = self.output_dir / "tables" / "excluded_wells.csv"
+            if excluded_csv.exists():
+                ex = self._load_csv(excluded_csv)
+                if {"plate", "well"}.issubset(ex.columns):
+                    excluded_pairs = set(zip(ex["plate"].astype(str), ex["well"].astype(str)))
+
+            plot_df = df.copy()
+            plot_df["_is_excluded"] = [
+                (str(p), str(w)) in excluded_pairs for p, w in zip(plot_df["plate"], plot_df["well"])
+            ]
+            plot_df["_group"] = plot_df[group_cols].astype(str).agg(" | ".join, axis=1)
+            for grp, sub in plot_df.groupby("_group"):
+                keep = sub[~sub["_is_excluded"]]
+                exc = sub[sub["_is_excluded"]]
+                if not keep.empty:
+                    ax_g.scatter(keep["PC1"], keep["PC2"], s=20, alpha=0.75, label=f"{grp} (included, n={len(keep)})")
+                if not exc.empty:
+                    ax_g.scatter(exc["PC1"], exc["PC2"], s=28, alpha=0.9, marker="X", edgecolor="black", linewidth=0.5, label=f"{grp} (excluded, n={len(exc)})")
+            ax_g.set_xlabel(xlab)
+            ax_g.set_ylabel(ylab)
+            ax_g.set_title(f"profiles_scatter ({mode})")
+            ax_g.legend(fontsize=7, ncol=2)
+            out.append(self._save(fig_g, plot_dir / f"profiles_scatter_{mode}.png"))
+
         # color by plate for QC confounding check
         if "plate" in df.columns:
             fig, ax = plt.subplots(figsize=(6.5, 5))
@@ -800,7 +829,7 @@ class PlotGenerator:
             ax_l.set_title(f"{prefix.upper()} top {pc} loadings ({mode})")
             out.append(self._save(fig_l, self.output_dir / "plots" / subdir / f"{prefix}_pca_loadings_{mode}_{pc.lower()}.png"))
 
-        dose_df = self._resolve_dose_response_source_df(mode=mode, fallback_df=merged) if prefix == "ec50" else merged
+        dose_df = self._resolve_dose_response_source_df(mode=mode, fallback_df=merged)
         out.extend(
             self._plot_top_loading_dose_response(
                 df=dose_df,
